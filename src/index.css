@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* GOAT ROBOTICS -- Black / Turkish Blue / White / Grey */
+  --gt-ink: #06070a;          /* true black -- sidebar base */
+  --gt-panel: #0d1017;        /* raised black panel */
+  --gt-panel-2: #12161f;      /* hover panel */
+  --gt-line: #1e2430;         /* hairline on black */
+
+  --gt-blue: #0ea5c4;         /* Turkish Blue -- Iznik/nazar cyan-blue, primary accent */
+  --gt-blue-deep: #075e73;    /* pressed / deep */
+  --gt-blue-bright: #37c8e6;  /* hover / glow */
+  --gt-blue-glow: rgba(14, 165, 196, 0.35);
+  --gt-blue-tint: #eaf8fb;    /* light accent wash on white panels */
+
+  --gt-green: #1c4b3a;        /* mid-dark green -- sidebar base */
+  --gt-green-deep: #0e2c21;   /* deep shadow green */
+  --gt-green-bright: #2f7a5c; /* lighter green for sheen highlights */
+
+  --gt-white: #ffffff;
+  --gt-grey-050: #f4f6f8;
+  --gt-grey-100: #eceff2;
+  --gt-grey-200: #dde2e8;
+  --gt-grey-400: #a7afba;
+  --gt-grey-600: #6b7280;
+  --gt-grey-800: #1b2027;
+
+  --font-display: 'Chakra Petch', 'Inter', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+body { margin: 0; background: var(--gt-grey-050); }
+
+.input { width: 100%; font-size: 12.5px; border: 1px solid #E2E8F0; border-radius: 6px; padding: 7px 9px; outline: none; background: #fff; color: #1e293b; }
+.input:focus { border-color: #0EA5C4; box-shadow: 0 0 0 2px rgba(14,165,196,0.18); }
+
+.font-display { font-family: var(--font-display); }
+.font-mono { font-family: var(--font-mono); }
+
+.gt-glass {
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.01));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.gt-nazar-ring {
+  background: radial-gradient(circle at 50% 50%, var(--gt-blue-bright) 0%, var(--gt-blue) 38%, transparent 70%);
+}
+
+.gt-sidebar-glossy {
+  position: relative;
+  background: linear-gradient(160deg, var(--gt-sidebar-from, #24614a) 0%, var(--gt-green) 38%, var(--gt-sidebar-to, #123424) 75%, var(--gt-green-deep) 100%);
+  filter: brightness(var(--gt-sidebar-brightness, 1));
+}
+.gt-sidebar-glossy::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.05) 22%, rgba(255,255,255,0) 46%);
+  pointer-events: none;
+}
+.gt-sidebar-glossy::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
+  pointer-events: none;
+}
+
+/* "Option menus" -- profile dropdown, notifications panel, search results.
+   Customizable from Settings -> Appearance (brightness + gradient). */
+.gt-menu-surface {
+  background: linear-gradient(180deg, var(--gt-menu-from, #ffffff), var(--gt-menu-to, #f2f4f6));
+  filter: brightness(var(--gt-menu-brightness, 0.96));
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--gt-grey-200); border-radius: 8px; }
+.dark-scroll::-webkit-scrollbar-thumb { background: #262c38; }
