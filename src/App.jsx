@@ -19,10 +19,25 @@ import {
 
 /* ----------------------------- constants ----------------------------- */
 
-const TEAMS = ["GT-Team 1", "GTX-Team 2", "GT-XP-Team 3"];
-const TEAM_NO_LABEL = { "GT-Team 1": "Team No 1 — GT-Team 1", "GTX-Team 2": "Team No 2 — GTX-Team 2", "GT-XP-Team 3": "Team No 3 — GT-XP-Team 3" };
-const TEAM_CODE = { "GT-Team 1": "GT1", "GTX-Team 2": "GTX2", "GT-XP-Team 3": "GXP3" };
-const TEAM_CAPACITY = { "GT-Team 1": 5, "GTX-Team 2": 6, "GT-XP-Team 3": 4 };
+// Teams are now a persisted, admin-editable list (Create + Delete from
+// Project Teams and from the Assignee Team picker) instead of a fixed
+// constant. Each team carries its own code + person capacity.
+const TEAMS_KEY = "gt_dashboard_teams_v2";
+const DEFAULT_TEAMS = [
+  { name: "GT-Team 1", code: "GT1", capacity: 5 },
+  { name: "GTX-Team 2", code: "GTX2", capacity: 6 },
+  { name: "GT-XP-Team 3", code: "GXP3", capacity: 4 },
+];
+function loadTeams() {
+  try {
+    const raw = localStorage.getItem(TEAMS_KEY);
+    if (raw) { const arr = JSON.parse(raw); if (Array.isArray(arr) && arr.length) return arr; }
+  } catch (e) {}
+  return DEFAULT_TEAMS.map((t) => ({ ...t }));
+}
+function saveTeams(list) {
+  try { localStorage.setItem(TEAMS_KEY, JSON.stringify(list)); } catch (e) {}
+}
 const DEPARTMENTS = ["Production", "Assembly", "Welding", "Machining", "Sheet Metal", "Coating"];
 const MANUFACTURING_DEPTS = ["Welding", "Sheet Metal", "Coating", "Machining"];
 const DEP_CHAIN = ["Machining", "Welding", "Coating", "Assembly"];
@@ -171,8 +186,8 @@ const THEME_KEY = "gt_dashboard_theme_v1";
 
 const DEFAULT_THEME = {
   sidebarBrightness: 100,   // %
-  sidebarFrom: "#24614a",
-  sidebarTo: "#0e2c21",
+  sidebarFrom: "#4CAF7C",
+  sidebarTo: "#1F6B47",
   menuBrightness: 96,       // % -- slightly under 100 so "option menu" white isn't stark
   menuFrom: "#ffffff",
   menuTo: "#f2f4f6",
@@ -393,7 +408,32 @@ function ProductionDashboard({ session, onLogout, theme, updateTheme }) {
   const [menuConfig, setMenuConfig] = useState(() => loadMenuConfig());
   const [customMenu, setCustomMenu] = useState(() => loadCustomMenu());
   const [customUsers, setCustomUsers] = useState(() => loadCustomUsers());
+  const [teams, setTeams] = useState(() => loadTeams());
   const importInputRef = useRef(null);
+
+  const teamNames = useMemo(() => teams.map((t) => t.name), [teams]);
+  const teamCodeOf = useCallback((name) => {
+    const t = teams.find((tm) => tm.name === name);
+    return t ? t.code : "GT";
+  }, [teams]);
+
+  const addTeam = useCallback((team) => {
+    setTeams((prev) => {
+      if (prev.some((t) => t.name === team.name)) return prev;
+      const next = [...prev, team];
+      saveTeams(next);
+      return next;
+    });
+  }, []);
+
+  const deleteTeam = useCallback((name) => {
+    setTeams((prev) => {
+      if (prev.length <= 1) return prev; // always keep at least one team
+      const next = prev.filter((t) => t.name !== name);
+      saveTeams(next);
+      return next;
+    });
+  }, []);
 
   const updateMenuConfig = useCallback((next) => {
     setMenuConfig(next);
@@ -492,21 +532,18 @@ function ProductionDashboard({ session, onLogout, theme, updateTheme }) {
   };
 
   const handleQuickCreate = (data) => {
-    const projectNumber = `${TEAM_CODE[data.team] || "GT"}-${Date.now().toString().slice(-5)}`;
+    const projectNumber = `${teamCodeOf(data.team) || "GT"}-${Date.now().toString().slice(-5)}`;
     const department = data.mode === "manufacturing" && MANUFACTURING_DEPTS.includes(data.manufacturing) ? data.manufacturing : "Production";
     const remarksParts = [];
-    if (data.mode === "variant") {
-      if (data.variants) remarksParts.push(`Variant: ${data.variants}`);
-      if (data.payload) remarksParts.push(`Payload: ${data.payload} kg`);
-      if (data.custom) remarksParts.push(`Custom: ${data.custom}`);
-    } else {
-      if (data.manufacturing) remarksParts.push(`Manufacturing: ${data.manufacturing}`);
-    }
+    if (data.variants) remarksParts.push(`Variant: ${data.variants}`);
+    if (data.payload) remarksParts.push(`Payload: ${data.payload} kg`);
+    if (data.mode === "variant" && data.custom) remarksParts.push(`Custom: ${data.custom}`);
+    if (data.manufacturing) remarksParts.push(`Manufacturing: ${data.manufacturing}`);
     const full = {
       name: data.name,
       mode: data.mode,
-      variants: data.mode === "variant" ? data.variants : "",
-      payload: data.mode === "variant" ? data.payload : "",
+      variants: data.variants || "",
+      payload: data.payload || "",
       custom: data.mode === "variant" ? data.custom : "",
       manufacturing: data.mode === "manufacturing" ? data.manufacturing : "",
       projectNumber,
@@ -557,7 +594,7 @@ function ProductionDashboard({ session, onLogout, theme, updateTheme }) {
           return todayISO();
         };
         const newOnes = rows.map((r) => {
-          const team = TEAMS.includes(r["Team"]) ? r["Team"] : TEAMS[0];
+          const team = teamNames.includes(r["Team"]) ? r["Team"] : teamNames[0];
           const department = DEPARTMENTS.includes(r["Department"]) ? r["Department"] : "Production";
           const priority = PRIORITIES.includes(r["Priority"]) ? r["Priority"] : "Medium";
           const status = STATUSES.includes(r["Status"]) ? r["Status"] : "Planned";
@@ -598,7 +635,7 @@ function ProductionDashboard({ session, onLogout, theme, updateTheme }) {
     setSidebarOpen(false);
   };
 
-  const exportTimelineWorkbook = () => exportTeamTimeline(projects, conflicts, TEAMS);
+  const exportTimelineWorkbook = () => exportTeamTimeline(projects, conflicts, teamNames);
 
   const activeItem = flatNav.find((s) => s.key === page) || flatNav[0];
 
@@ -623,7 +660,7 @@ function ProductionDashboard({ session, onLogout, theme, updateTheme }) {
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/70 z-40 transition-opacity" onClick={() => setSidebarOpen(false)} />
       )}
-      <Sidebar page={page} setPage={setPage} conflictCount={conflicts.length} menuConfig={menuConfig} customMenu={customMenu} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Sidebar page={page} setPage={setPage} conflictCount={conflicts.length} menuConfig={menuConfig} customMenu={customMenu} open={sidebarOpen} onClose={() => setSidebarOpen(false)} isAdmin={isAdmin} />
       <div className="flex-1 min-w-0 flex flex-col h-full">
         <TopBar
           activeItem={activeItem}
@@ -677,6 +714,9 @@ function ProductionDashboard({ session, onLogout, theme, updateTheme }) {
             updateCustomUsers={updateCustomUsers}
             theme={theme}
             updateTheme={updateTheme}
+            teams={teams}
+            addTeam={addTeam}
+            deleteTeam={deleteTeam}
             onCreateClick={() => setQuickOpen(true)}
             onEdit={(p) => { setEditing(p); setFormOpen(true); }}
             onDelete={(p) => setDeleting(p)}
@@ -691,12 +731,15 @@ function ProductionDashboard({ session, onLogout, theme, updateTheme }) {
         <ProjectFormModal
           initial={editing}
           enabledDepartments={enabledDepartments}
+          teams={teams}
+          addTeam={addTeam}
+          deleteTeam={deleteTeam}
           onClose={() => { setFormOpen(false); setEditing(null); }}
           onSave={saveProject}
         />
       )}
       {quickOpen && (
-        <QuickCreateModal onClose={() => setQuickOpen(false)} onSave={handleQuickCreate} />
+        <QuickCreateModal teams={teams} addTeam={addTeam} deleteTeam={deleteTeam} onClose={() => setQuickOpen(false)} onSave={handleQuickCreate} />
       )}
       {deleting && (
         <ConfirmModal
@@ -721,6 +764,7 @@ function PageRouter(props) {
   const { page, setPage, projects, scopedProjects, conflicts, conflictedIds, ganttView, setGanttView,
     search, filters, setFilters, isAdmin, menuConfig, updateMenuConfig,
     customMenu, updateCustomMenu, customUsers, updateCustomUsers, theme, updateTheme,
+    teams, addTeam, deleteTeam,
     onCreateClick, onEdit, onDelete, onExport, onExportTimeline, onImportClick } = props;
 
   if (page === "overview.counts") {
@@ -728,7 +772,7 @@ function PageRouter(props) {
       <OverviewPage
         projects={projects} conflicts={conflicts} conflictedIds={conflictedIds}
         ganttView={ganttView} setGanttView={setGanttView}
-        onEdit={onEdit} onDelete={onDelete} setPage={setPage} isAdmin={isAdmin}
+        onEdit={onEdit} onDelete={onDelete} setPage={setPage} isAdmin={isAdmin} teams={teams}
       />
     );
   }
@@ -749,14 +793,14 @@ function PageRouter(props) {
     return <CustomMenuPage label={item ? item.label : "Custom Page"} />;
   }
   if (page === "projectconfig.teams") {
-    return <TeamsPage projects={projects} setPage={setPage} />;
+    return <TeamsPage projects={projects} setPage={setPage} teams={teams} addTeam={addTeam} deleteTeam={deleteTeam} isAdmin={isAdmin} />;
   }
   if (page === "projectconfig.feeds") {
     return (
       <FeedsPage
         projects={projects} onCreateClick={onCreateClick} onEdit={onEdit} onDelete={onDelete}
         conflictedIds={conflictedIds} onExport={onExport} onExportTimeline={onExportTimeline}
-        onImportClick={onImportClick} isAdmin={isAdmin}
+        onImportClick={onImportClick} isAdmin={isAdmin} teams={teams}
       />
     );
   }
@@ -775,7 +819,7 @@ function PageRouter(props) {
         search={search} filters={filters} setFilters={setFilters}
         conflicts={conflicts} conflictedIds={conflictedIds}
         ganttView={ganttView} setGanttView={setGanttView}
-        onEdit={onEdit} onDelete={onDelete} isAdmin={isAdmin}
+        onEdit={onEdit} onDelete={onDelete} isAdmin={isAdmin} teams={teams}
       />
     );
   }
@@ -806,13 +850,19 @@ function PageRouter(props) {
   if (page === "settings.contact") {
     return <ContactPage />;
   }
-  return <OverviewPage projects={projects} conflicts={conflicts} conflictedIds={conflictedIds} ganttView={ganttView} setGanttView={setGanttView} onEdit={onEdit} onDelete={onDelete} setPage={setPage} isAdmin={isAdmin} />;
+  return <OverviewPage projects={projects} conflicts={conflicts} conflictedIds={conflictedIds} ganttView={ganttView} setGanttView={setGanttView} onEdit={onEdit} onDelete={onDelete} setPage={setPage} isAdmin={isAdmin} teams={teams} />;
 }
 
 /* -------------------------------- Sidebar -------------------------------- */
 
-function Sidebar({ page, setPage, conflictCount, menuConfig, customMenu, open, onClose }) {
-  const navTree = useMemo(() => buildNavTree(customMenu), [customMenu]);
+function Sidebar({ page, setPage, conflictCount, menuConfig, customMenu, open, onClose, isAdmin }) {
+  // Viewer role never sees Configuration Portal or User Access Portal —
+  // those groups are stripped from the nav tree entirely for non-admins.
+  const navTree = useMemo(() => {
+    const full = buildNavTree(customMenu);
+    if (isAdmin) return full;
+    return full.filter((g) => g.key !== "configportal" && g.key !== "useraccess");
+  }, [customMenu, isAdmin]);
   const activeGroupKey = page.split(".")[0];
   const [openGroups, setOpenGroups] = useState(() => new Set(navTree.map((g) => g.key)));
 
@@ -850,7 +900,7 @@ function Sidebar({ page, setPage, conflictCount, menuConfig, customMenu, open, o
           <img
             src={logo}
             alt="GOAT Robotics"
-            className="h-14 w-auto max-w-[80%] object-contain shrink-0"
+            className="h-24 w-auto max-w-[92%] object-contain shrink-0"
           />
           <div className="text-[10px] text-turkish-bright font-display font-semibold tracking-[0.14em] mt-2.5 uppercase">PRD-Tracker</div>
         </div>
@@ -1123,7 +1173,8 @@ function SectionHeading({ title, crumb, size = "sm", icon: Icon }) {
 
 /* ------------------------------ Overview -------------------------------- */
 
-function OverviewPage({ projects, conflicts, conflictedIds, ganttView, setGanttView, onEdit, onDelete, setPage, isAdmin }) {
+function OverviewPage({ projects, conflicts, conflictedIds, ganttView, setGanttView, onEdit, onDelete, setPage, isAdmin, teams }) {
+  const teamNames = (teams || []).map((t) => t.name);
   const total = projects.length;
   const active = projects.filter((p) => p.status === "In Progress").length;
   const planned = projects.filter((p) => p.status === "Planned").length;
@@ -1174,7 +1225,7 @@ function OverviewPage({ projects, conflicts, conflictedIds, ganttView, setGanttV
         <div className="bg-white rounded-lg border border-slate-200 p-4">
           <div className="mb-2.5"><SectionHeading title="By Team" /></div>
           <div className="space-y-2">
-            {TEAMS.map((tm) => (
+            {teamNames.map((tm) => (
               <div key={tm} className="flex items-center justify-between text-[12.5px]">
                 <span className="text-slate-600">{tm}</span>
                 <span className="font-mono font-semibold text-slate-800">{byTeam(tm)}</span>
@@ -1555,24 +1606,48 @@ function DisabledModuleNotice({ dept, setPage }) {
 
 /* -------------------------------- Teams page ------------------------------ */
 
-function TeamsPage({ projects, setPage }) {
+function TeamsPage({ projects, setPage, teams, addTeam, deleteTeam, isAdmin }) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+  const [capacity, setCapacity] = useState("");
+  const [nameErr, setNameErr] = useState("");
+
+  const submitCreate = () => {
+    const n = name.trim();
+    if (!n) { setNameErr("Team name is required."); return; }
+    if (teams.some((t) => t.name.toLowerCase() === n.toLowerCase())) { setNameErr("A team with this name already exists."); return; }
+    addTeam({ name: n, code: (code.trim() || n.slice(0, 3).toUpperCase()), capacity: Number(capacity) || 0 });
+    setName(""); setCode(""); setCapacity(""); setNameErr(""); setAdding(false);
+  };
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {TEAMS.map((team) => {
-          const items = projects.filter((p) => p.team === team);
+        {teams.map((team) => {
+          const items = projects.filter((p) => p.team === team.name);
           const active = items.filter((p) => p.status === "In Progress").length;
-          const capacity = TEAM_CAPACITY[team];
           return (
-            <div key={team} className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+            <div key={team.name} className="bg-white rounded-lg border border-slate-200 overflow-hidden">
               <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-                <SectionHeading title={team} icon={Bot} />
-                <span className="text-[11px] font-mono text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full">{TEAM_CODE[team]}</span>
+                <SectionHeading title={team.name} icon={Bot} />
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="text-[11px] font-mono text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full">{team.code}</span>
+                  {isAdmin && teams.length > 1 && (
+                    <button
+                      onClick={() => deleteTeam(team.name)}
+                      title="Delete this team"
+                      className="p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-500"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="p-4 space-y-2.5">
                 <div className="flex items-center justify-between text-[12.5px]">
                   <span className="text-slate-500">Number of Persons</span>
-                  <span className="font-mono font-semibold text-slate-800">{capacity}</span>
+                  <span className="font-mono font-semibold text-slate-800">{team.capacity}</span>
                 </div>
                 <div className="flex items-center justify-between text-[12.5px]">
                   <span className="text-slate-500">Active Allocation</span>
@@ -1588,12 +1663,40 @@ function TeamsPage({ projects, setPage }) {
           );
         })}
       </div>
-      <div className="bg-white rounded-lg border border-slate-200 p-5">
-        <SectionHeading title="Team Creation" />
-        <div className="text-[12px] text-slate-400 mt-2">
-          Create / Edit / Delete team, and assigning variant categories per team, moves teams from the fixed <span className="font-mono">TEAMS</span> constant into a proper <span className="font-mono">Teams</span> table — planned for the Data Model phase.
+
+      {isAdmin && (
+        <div className="bg-white rounded-lg border border-slate-200 p-5">
+          <div className="flex items-center justify-between">
+            <SectionHeading title="Team Creation" />
+            {!adding && (
+              <button onClick={() => setAdding(true)} className="flex items-center gap-1.5 bg-turkish hover:bg-turkish-deep text-white text-[12.5px] font-medium px-3.5 py-1.5 rounded-md transition-colors">
+                <Plus size={14} /> Create
+              </button>
+            )}
+          </div>
+          {adding ? (
+            <div className="mt-3.5 grid grid-cols-1 md:grid-cols-3 gap-3">
+              <Field label="Team Name" error={nameErr}>
+                <input autoFocus value={name} onChange={(e) => { setName(e.target.value); setNameErr(""); }} className="input" placeholder="e.g. GT-Team 4" />
+              </Field>
+              <Field label="Code (optional)">
+                <input value={code} onChange={(e) => setCode(e.target.value)} className="input" placeholder="e.g. GT4" />
+              </Field>
+              <Field label="Number of Persons">
+                <input type="number" min="0" value={capacity} onChange={(e) => setCapacity(e.target.value)} className="input" placeholder="e.g. 5" />
+              </Field>
+              <div className="md:col-span-3 flex items-center justify-end gap-2 mt-1">
+                <button onClick={() => { setAdding(false); setName(""); setCode(""); setCapacity(""); setNameErr(""); }} className="text-[13px] px-3.5 py-1.5 rounded-md text-slate-500 hover:bg-slate-100">Cancel</button>
+                <button onClick={submitCreate} className="text-[13px] px-4 py-1.5 rounded-md bg-turkish hover:bg-turkish-deep text-white font-medium">Create Team</button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-[12px] text-slate-400 mt-2">
+              Create a new team here, or delete one using the trash icon on its card above. New teams are available immediately in every Assignee Team picker.
+            </div>
+          )}
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1612,10 +1715,10 @@ function TimelineCalcPage() {
 
 /* -------------------------------- FeedsPage ------------------------------- */
 
-function FeedsPage({ projects, onCreateClick, onEdit, onDelete, conflictedIds, onExport, onExportTimeline, onImportClick, isAdmin }) {
-  const grouped = TEAMS.map((team) => ({
-    team,
-    items: projects.filter((p) => p.team === team).sort((a, b) => (a.startDate < b.startDate ? -1 : 1)),
+function FeedsPage({ projects, onCreateClick, onEdit, onDelete, conflictedIds, onExport, onExportTimeline, onImportClick, isAdmin, teams }) {
+  const grouped = (teams || []).map((t) => ({
+    team: t.name,
+    items: projects.filter((p) => p.team === t.name).sort((a, b) => (a.startDate < b.startDate ? -1 : 1)),
   }));
 
   return (
@@ -1710,7 +1813,7 @@ function FeedsPage({ projects, onCreateClick, onEdit, onDelete, conflictedIds, o
 
 /* -------------------------------- ListPage ------------------------------- */
 
-function ListPage({ title, icon: Icon, projects, allTeams, search, filters, setFilters, conflicts, conflictedIds, ganttView, setGanttView, onEdit, onDelete, isAdmin }) {
+function ListPage({ title, icon: Icon, projects, allTeams, search, filters, setFilters, conflicts, conflictedIds, ganttView, setGanttView, onEdit, onDelete, isAdmin, teams }) {
   const filtered = useMemo(() => {
     return projects.filter((p) => {
       if (search && !(p.name.toLowerCase().includes(search.toLowerCase()) || p.projectNumber.toLowerCase().includes(search.toLowerCase()))) return false;
@@ -1747,7 +1850,7 @@ function ListPage({ title, icon: Icon, projects, allTeams, search, filters, setF
         ))}
       </div>
 
-      <FilterBar filters={filters} setFilters={setFilters} showTeam={allTeams} count={filtered.length} />
+      <FilterBar filters={filters} setFilters={setFilters} showTeam={allTeams} count={filtered.length} teams={teams} />
 
       {teamConflicts.length > 0 && (
         <div className="bg-[#FBEAEA] border border-red-200 rounded-lg p-3 space-y-1.5">
@@ -1771,7 +1874,7 @@ function ListPage({ title, icon: Icon, projects, allTeams, search, filters, setF
   );
 }
 
-function FilterBar({ filters, setFilters, showTeam, count }) {
+function FilterBar({ filters, setFilters, showTeam, count, teams }) {
   const set = (k, v) => setFilters({ ...filters, [k]: v });
   const clear = () => setFilters({ team: "", department: "", status: "", priority: "" });
   const active = Object.values(filters).some(Boolean);
@@ -1781,7 +1884,7 @@ function FilterBar({ filters, setFilters, showTeam, count }) {
       {showTeam && (
         <select value={filters.team} onChange={(e) => set("team", e.target.value)} className="text-[12px] border border-slate-200 rounded-md px-2 py-1.5 bg-white">
           <option value="">All Teams</option>
-          {TEAMS.map((t) => <option key={t} value={t}>{t}</option>)}
+          {(teams || []).map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}
         </select>
       )}
       <select value={filters.department} onChange={(e) => set("department", e.target.value)} className="text-[12px] border border-slate-200 rounded-md px-2 py-1.5 bg-white">
@@ -2326,10 +2429,10 @@ function ContactPage() {
 
 /* ---------------------------- ProjectFormModal ---------------------------- */
 
-function ProjectFormModal({ initial, enabledDepartments, onClose, onSave }) {
+function ProjectFormModal({ initial, enabledDepartments, teams, addTeam, deleteTeam, onClose, onSave }) {
   const deptOptions = enabledDepartments && enabledDepartments.length ? enabledDepartments : DEPARTMENTS;
   const [form, setForm] = useState(() => initial || {
-    name: "", projectNumber: "", variants: "", department: deptOptions[0], team: TEAMS[0],
+    name: "", projectNumber: "", variants: "", department: deptOptions[0], team: teams[0]?.name || "",
     startDate: todayISO(), endDate: todayISO(), priority: "Medium", status: "Planned",
     remarks: "", progress: 0,
   });
@@ -2383,9 +2486,7 @@ function ProjectFormModal({ initial, enabledDepartments, onClose, onSave }) {
               </select>
             </Field>
             <Field label="Team" error={errors.team}>
-              <select value={form.team} onChange={(e) => set("team", e.target.value)} className="input">
-                {TEAMS.map((t) => <option key={t} value={t}>{t}</option>)}
-              </select>
+              <TeamPicker value={form.team} onChange={(v) => set("team", v)} teams={teams} onCreate={addTeam} onDelete={deleteTeam} />
             </Field>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -2514,6 +2615,63 @@ function TagOptionSelect({ value, onSelect, options, onCreate, onDelete, emptyLa
   );
 }
 
+// Assignee Team picker used in both the Feed Project modal and the full
+// Add/Edit Project modal. Lets an admin create a brand-new team on the spot
+// (name + optional code + person count) or delete the currently selected
+// team, without leaving the form.
+function TeamPicker({ value, onChange, teams, onCreate, onDelete, error }) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+  const [capacity, setCapacity] = useState("");
+
+  const submit = () => {
+    const n = name.trim();
+    if (!n) { setAdding(false); return; }
+    onCreate({ name: n, code: (code.trim() || n.slice(0, 3).toUpperCase()), capacity: Number(capacity) || 0 });
+    onChange(n);
+    setName(""); setCode(""); setCapacity(""); setAdding(false);
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-1.5">
+        <select value={value} onChange={(e) => onChange(e.target.value)} className="input flex-1">
+          {teams.map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}
+        </select>
+        {value && teams.length > 1 && (
+          <button
+            type="button"
+            title="Delete this team"
+            onClick={() => onDelete(value)}
+            className="w-[30px] h-[30px] shrink-0 rounded-md border border-slate-200 text-slate-400 hover:border-red-300 hover:text-red-500 flex items-center justify-center"
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setAdding((v) => !v)}
+          title="Create a new team"
+          className="w-[30px] h-[30px] shrink-0 rounded-md border border-dashed border-slate-300 text-slate-400 hover:border-turkish hover:text-turkish flex items-center justify-center"
+        >
+          <Plus size={13} />
+        </button>
+      </div>
+      {adding && (
+        <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-md p-2">
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Team name" className="text-[11.5px] border border-slate-200 rounded px-2 py-1 flex-1 min-w-0 outline-none focus:border-turkish" />
+          <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="Code" className="text-[11.5px] border border-slate-200 rounded px-2 py-1 w-14 outline-none focus:border-turkish" />
+          <input value={capacity} onChange={(e) => setCapacity(e.target.value)} placeholder="Persons" type="number" className="text-[11.5px] border border-slate-200 rounded px-2 py-1 w-16 outline-none focus:border-turkish" />
+          <button type="button" onClick={submit} className="w-6 h-6 rounded-full flex items-center justify-center bg-turkish hover:bg-turkish-deep text-white cursor-pointer shrink-0"><CheckCircle2 size={12} /></button>
+          <button type="button" onClick={() => setAdding(false)} className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 cursor-pointer shrink-0"><X size={12} /></button>
+        </div>
+      )}
+      {error && <div className="text-[11px] text-red-500 mt-1">{error}</div>}
+    </div>
+  );
+}
+
 // Small segmented toggle used for the Variant / Manufacturing switch.
 function ModeToggle({ value, onChange, options }) {
   return (
@@ -2535,10 +2693,10 @@ function ModeToggle({ value, onChange, options }) {
   );
 }
 
-function QuickCreateModal({ onClose, onSave }) {
+function QuickCreateModal({ onClose, onSave, teams, addTeam, deleteTeam }) {
   const [form, setForm] = useState({
     name: "", mode: "variant", variants: "", payload: "", custom: "", manufacturing: "",
-    team: TEAMS[0], startDate: todayISO(), endDate: todayISO(),
+    team: teams[0]?.name || "", startDate: todayISO(), endDate: todayISO(),
   });
   const [errors, setErrors] = useState({});
   const [variantOptions, setVariantOptions] = useState(() => loadOptionList(VARIANT_OPTIONS_KEY, DEFAULT_VARIANT_OPTIONS));
@@ -2611,15 +2769,35 @@ function QuickCreateModal({ onClose, onSave }) {
           </div>
 
           {form.mode === "manufacturing" ? (
-            <Field label="Manufacturing">
-              <TagOptionSelect
-                value={form.manufacturing}
-                onSelect={(v) => set("manufacturing", v)}
-                options={manufacturingOptions}
-                onCreate={addManufacturingOption}
-                onDelete={deleteManufacturingOption}
-              />
-            </Field>
+            <>
+              <Field label="Manufacturing">
+                <TagOptionSelect
+                  value={form.manufacturing}
+                  onSelect={(v) => set("manufacturing", v)}
+                  options={manufacturingOptions}
+                  onCreate={addManufacturingOption}
+                  onDelete={deleteManufacturingOption}
+                />
+              </Field>
+              <Field label="Variant">
+                <TagOptionSelect
+                  value={form.variants}
+                  onSelect={(v) => set("variants", v)}
+                  options={variantOptions}
+                  onCreate={addVariantOption}
+                  onDelete={deleteVariantOption}
+                />
+              </Field>
+              <Field label="Payload (kg)">
+                <TagOptionSelect
+                  value={form.payload}
+                  onSelect={(v) => set("payload", v)}
+                  options={payloadOptions}
+                  onCreate={addPayloadOption}
+                  onDelete={deletePayloadOption}
+                />
+              </Field>
+            </>
           ) : (
             <>
               <Field label="Variant">
@@ -2654,9 +2832,7 @@ function QuickCreateModal({ onClose, onSave }) {
           )}
 
           <Field label="Assignee Team" error={errors.team}>
-            <select value={form.team} onChange={(e) => set("team", e.target.value)} className="input">
-              {TEAMS.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
+            <TeamPicker value={form.team} onChange={(v) => set("team", v)} teams={teams} onCreate={addTeam} onDelete={deleteTeam} />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Start Date" error={errors.startDate}>
@@ -2680,20 +2856,23 @@ function QuickCreateModal({ onClose, onSave }) {
 /* -------------------------------- LoginPage ------------------------------- */
 
 function AuthShell({ children, embedded }) {
-  if (embedded) {
-    return <div className="w-full max-w-[380px] mx-auto">{children}</div>;
-  }
+  const formPane = (
+    <div className="w-full max-w-[380px] mx-auto">{children}</div>
+  );
+
+  if (embedded) return formPane;
 
   return (
-    <div className="w-full min-h-screen flex items-stretch relative overflow-hidden gt-auth-aurora" style={{ fontFamily: "var(--font-body)" }}>
-      {/* ---- left: logo mounted on paint-splash, over the shared animated backdrop ---- */}
-      <div className="hidden lg:flex relative z-10 w-[46%] shrink-0 items-center justify-center">
+    <div className="w-full min-h-screen flex items-stretch bg-ink" style={{ fontFamily: "var(--font-body)" }}>
+      {/* ---- left: animated brand panel with logo mounted on paint-splash ---- */}
+      <div className="hidden lg:flex relative w-[46%] shrink-0 items-center justify-center overflow-hidden gt-auth-aurora">
         <div className="relative w-[72%] max-w-[460px] aspect-[515/332]">
           <img
             src={loginSplash}
             alt=""
             aria-hidden="true"
             className="absolute inset-0 w-full h-full object-contain gt-splash-bg"
+            style={{ mixBlendMode: "screen" }}
           />
           <img
             src={logo}
@@ -2706,11 +2885,9 @@ function AuthShell({ children, embedded }) {
         </div>
       </div>
 
-      {/* ---- right: sign-in form, floating over the same animated backdrop ---- */}
-      <div className="flex-1 flex items-center justify-center p-6 sm:p-10 relative z-10">
-        <div className="w-full max-w-[380px] mx-auto bg-panel/70 gt-glass backdrop-blur-xl border border-gline rounded-2xl shadow-2xl p-7">
-          {children}
-        </div>
+      {/* ---- right: sign-in form ---- */}
+      <div className="flex-1 flex items-center justify-center p-6 sm:p-10 bg-ink">
+        {formPane}
       </div>
 
       <style>{`
@@ -2722,11 +2899,9 @@ function AuthShell({ children, embedded }) {
         .gt-auth-aurora::before{
           content:"";
           position:absolute; inset:-20%;
-          background: radial-gradient(circle at 20% 20%, rgba(14,165,196,0.26), transparent 50%),
-                      radial-gradient(circle at 80% 30%, rgba(55,200,230,0.14), transparent 48%),
-                      radial-gradient(circle at 60% 85%, rgba(14,165,196,0.18), transparent 50%);
+          background: radial-gradient(circle at 30% 25%, rgba(14,165,196,0.28), transparent 55%),
+                      radial-gradient(circle at 75% 70%, rgba(55,200,230,0.16), transparent 50%);
           animation: gtAuroraDrift 22s ease-in-out infinite alternate;
-          pointer-events: none;
         }
         @keyframes gtAuroraShift{
           0%{background-position:0% 30%;}

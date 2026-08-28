@@ -15,9 +15,9 @@
   --gt-blue-glow: rgba(14, 165, 196, 0.35);
   --gt-blue-tint: #eaf8fb;    /* light accent wash on white panels */
 
-  --gt-green: #1c4b3a;        /* mid-dark green -- sidebar base */
-  --gt-green-deep: #0e2c21;   /* deep shadow green */
-  --gt-green-bright: #2f7a5c; /* lighter green for sheen highlights */
+  --gt-green: #3fa876;        /* mid green -- sidebar base (glossy light green) */
+  --gt-green-deep: #1f6b47;   /* deep shadow green */
+  --gt-green-bright: #6fd9a5; /* lighter green for sheen highlights */
 
   --gt-white: #ffffff;
   --gt-grey-050: #f4f6f8;
