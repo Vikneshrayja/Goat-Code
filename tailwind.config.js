@@ -4,15 +4,19 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: "#06070a",
-        panel: "#0d1017",
-        "panel-2": "#12161f",
-        gline: "#1e2430",
+        // These read from CSS custom properties (set in src/index.css and
+        // kept live by applyTheme() in App.jsx) instead of fixed hex, so
+        // Settings -> Theme can recolor every bg-ink / text-turkish /
+        // border-gline element in the app, not just the sidebar gradient.
+        ink: "var(--gt-ink)",
+        panel: "var(--gt-panel)",
+        "panel-2": "var(--gt-panel-2)",
+        gline: "var(--gt-line)",
         turkish: {
-          DEFAULT: "#0ea5c4",
-          deep: "#075e73",
-          bright: "#37c8e6",
-          tint: "#eaf8fb",
+          DEFAULT: "var(--gt-blue)",
+          deep: "var(--gt-blue-deep)",
+          bright: "var(--gt-blue-bright)",
+          tint: "var(--gt-blue-tint)",
         },
       },
       fontFamily: {
