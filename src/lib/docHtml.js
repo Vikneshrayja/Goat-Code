@@ -18,7 +18,7 @@ const para = (v) => {
   return t ? esc(t).replace(/\n/g, "<br>") : '<span class="empty">—</span>';
 };
 
-const fmtDate = (iso) => {
+export const fmtDate = (iso) => {
   if (!iso) return "—";
   const d = new Date(String(iso).length <= 10 ? iso + "T00:00:00" : iso);
   if (isNaN(d.getTime())) return "—";

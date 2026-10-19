@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
-  Plus, X, Trash2, Pencil, Eye, Printer, FileText, ClipboardCheck, Wallet, Gauge, CalendarDays,
+  Plus, X, Trash2, Pencil, Eye, Printer, Download, FileText, ClipboardCheck, Wallet, Gauge, CalendarDays,
 } from "lucide-react";
 import logo from "../assets/logo.png";
 import { Field, SectionHeading, ConfirmModal, todayISO, durationDays } from "../shared";
@@ -9,6 +9,7 @@ import {
   RCA_SIGNERS, rcaHtml, costingHtml, costingSummaryHtml, bottleneckHtml, printHtml,
   fmtDateTime, money, costSaving, costSavingPct, CURRENCIES,
 } from "../lib/docHtml";
+import { rcaModel, costingModel, costingSummaryModel, bottleneckModel, downloadWord, downloadPdf } from "../lib/docExport";
 
 /* ============================ shared plumbing ============================ */
 
@@ -86,8 +87,21 @@ function Modal({ title, icon: Icon, onClose, children, footer, wide }) {
   );
 }
 
+// Word / PDF download in the Goat Robotics template (see lib/docExport.js).
+async function runDownload(kind, model, notify, setBusy) {
+  setBusy && setBusy(kind);
+  try {
+    await (kind === "docx" ? downloadWord(model) : downloadPdf(model));
+  } catch (e) {
+    notify && notify("Could not create the " + (kind === "docx" ? "Word" : "PDF") + " file: " + (e.message || e));
+  } finally {
+    setBusy && setBusy("");
+  }
+}
+
 // On-screen preview of the exact document that gets printed.
-function PreviewModal({ title, html, onClose, notify }) {
+function PreviewModal({ title, html, model, onClose, notify }) {
+  const [busy, setBusy] = useState("");
   const doPrint = () => {
     if (!printHtml(html)) notify && notify("Pop-up blocked — allow pop-ups for this site to print or save as PDF.");
   };
@@ -97,8 +111,16 @@ function PreviewModal({ title, html, onClose, notify }) {
         <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
           <div className="text-[14px] font-display font-semibold text-slate-800 flex items-center gap-1.5"><FileText size={16} className="text-turkish" /> {title}</div>
           <div className="flex items-center gap-2">
+            {model && <>
+              <button data-testid="doc-word" disabled={!!busy} onClick={() => runDownload("docx", model, notify, setBusy)} className="flex items-center gap-1.5 text-[12.5px] px-3.5 py-1.5 rounded-md border border-slate-200 hover:border-turkish text-slate-700 cursor-pointer disabled:opacity-60">
+                <Download size={14} /> {busy === "docx" ? "Preparing…" : "Word"}
+              </button>
+              <button data-testid="doc-pdf" disabled={!!busy} onClick={() => runDownload("pdf", model, notify, setBusy)} className="flex items-center gap-1.5 text-[12.5px] px-3.5 py-1.5 rounded-md border border-slate-200 hover:border-turkish text-slate-700 cursor-pointer disabled:opacity-60">
+                <Download size={14} /> {busy === "pdf" ? "Preparing…" : "PDF"}
+              </button>
+            </>}
             <button data-testid="doc-print" onClick={doPrint} className="flex items-center gap-1.5 text-[12.5px] px-3.5 py-1.5 rounded-md bg-turkish hover:bg-turkish-deep text-white cursor-pointer">
-              <Printer size={14} /> Print / Save as PDF
+              <Printer size={14} /> Print
             </button>
             <button onClick={onClose} aria-label="Close preview" className="text-slate-400 hover:text-slate-600 cursor-pointer"><X size={18} /></button>
           </div>
@@ -109,9 +131,14 @@ function PreviewModal({ title, html, onClose, notify }) {
   );
 }
 
-function RowActions({ isAdmin, onView, onEdit, onDelete, label }) {
+function RowActions({ isAdmin, onView, onEdit, onDelete, label, model, notify }) {
+  const [busy, setBusy] = useState("");
   return (
     <div className="flex items-center justify-end gap-1">
+      {model && <>
+        <button disabled={!!busy} onClick={() => runDownload("docx", model, notify, setBusy)} aria-label={`Download ${label} as Word`} title="Download Word (.docx)" className="px-1.5 py-1 rounded hover:bg-slate-100 text-[10.5px] font-semibold text-slate-500 cursor-pointer disabled:opacity-50">{busy === "docx" ? "…" : "DOC"}</button>
+        <button disabled={!!busy} onClick={() => runDownload("pdf", model, notify, setBusy)} aria-label={`Download ${label} as PDF`} title="Download PDF" className="px-1.5 py-1 rounded hover:bg-slate-100 text-[10.5px] font-semibold text-slate-500 cursor-pointer disabled:opacity-50">{busy === "pdf" ? "…" : "PDF"}</button>
+      </>}
       <button onClick={onView} aria-label={`View ${label}`} title="View document" className="p-1.5 rounded hover:bg-slate-100 text-slate-500 cursor-pointer"><Eye size={13} /></button>
       {isAdmin && <button onClick={onEdit} aria-label={`Edit ${label}`} title="Edit" className="p-1.5 rounded hover:bg-slate-100 text-slate-500 cursor-pointer"><Pencil size={13} /></button>}
       {isAdmin && <button onClick={onDelete} aria-label={`Delete ${label}`} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-slate-500 hover:text-red-500 cursor-pointer"><Trash2 size={13} /></button>}
@@ -320,7 +347,7 @@ export function RcaPage({ isAdmin, session, notify }) {
   return (
     <div className="space-y-4">
       <PageHeader title="RCA — Root Cause Analysis" icon={ClipboardCheck} isAdmin={isAdmin} createLabel="New RCA" onCreate={() => setForm({ record: null })}
-        hint="Record an incident, its explanation, corrective and preventive action, then collect the three sign-offs. Open any record to print it or save it as a PDF." />
+        hint="Record an incident, its explanation, corrective and preventive action, then collect the three sign-offs. Open any record to download it as Word or PDF, or print it." />
       <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-[12.5px]" data-testid="rca-table">
@@ -338,7 +365,7 @@ export function RcaPage({ isAdmin, session, notify }) {
                   <td className="px-3 py-2.5 text-slate-500 max-w-[240px] truncate" title={r.description}>{r.description}</td>
                   <td className="px-3 py-2.5 font-mono text-slate-500">{r.fix_date || "—"}</td>
                   <td className="px-3 py-2.5"><span className={`text-[11px] px-2 py-0.5 rounded-full ${signedCount(r) === 3 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{signedCount(r)}/3</span></td>
-                  <td className="px-3 py-2.5"><RowActions isAdmin={isAdmin} label={r.ref} onView={() => setView(r)} onEdit={() => setForm({ record: r })} onDelete={() => setDel(r)} /></td>
+                  <td className="px-3 py-2.5"><RowActions isAdmin={isAdmin} label={r.ref} notify={notify} model={rcaModel(r)} onView={() => setView(r)} onEdit={() => setForm({ record: r })} onDelete={() => setDel(r)} /></td>
                 </tr>
               ))}
             </tbody>
@@ -352,7 +379,7 @@ export function RcaPage({ isAdmin, session, notify }) {
           onSave={async (row) => { const res = await save(row); if (!res.error) { notify && notify(form.record ? "RCA updated." : "RCA saved."); setForm(null); } return res; }}
         />
       )}
-      {view && <PreviewModal title={`RCA ${view.ref || ""}`} html={rcaHtml(view, logoUrl())} onClose={() => setView(null)} notify={notify} />}
+      {view && <PreviewModal title={`RCA ${view.ref || ""}`} html={rcaHtml(view, logoUrl())} model={rcaModel(view)} onClose={() => setView(null)} notify={notify} />}
       {del && (
         <ConfirmModal title="Delete RCA?" message={`Delete ${del.ref}? This cannot be undone.`} onCancel={() => setDel(null)}
           onConfirm={async () => { const r = del; setDel(null); const res = await remove(r.id); notify && notify(res.error ? "Could not delete: " + res.error : "RCA deleted."); }} />
@@ -499,7 +526,7 @@ export function CostingPage({ isAdmin, projects, notify }) {
                     <td className="px-3 py-2.5 text-right font-mono text-slate-500 whitespace-nowrap">{money(r.previous_cost, r.currency)} → {money(r.new_cost, r.currency)}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-slate-500">{r.quantity}</td>
                     <td className={`px-3 py-2.5 text-right font-mono font-semibold whitespace-nowrap ${s >= 0 ? "text-emerald-600" : "text-red-600"}`}>{money(s, r.currency)}</td>
-                    <td className="px-3 py-2.5"><RowActions isAdmin={isAdmin} label={r.ref} onView={() => setView(r)} onEdit={() => setForm({ record: r })} onDelete={() => setDel(r)} /></td>
+                    <td className="px-3 py-2.5"><RowActions isAdmin={isAdmin} label={r.ref} notify={notify} model={costingModel(r)} onView={() => setView(r)} onEdit={() => setForm({ record: r })} onDelete={() => setDel(r)} /></td>
                   </tr>
                 );
               })}
@@ -512,8 +539,8 @@ export function CostingPage({ isAdmin, projects, notify }) {
         <CostingForm initial={form.record} rows={rows} projects={projects} onClose={() => setForm(null)}
           onSave={async (row) => { const res = await save(row); if (!res.error) { notify && notify(form.record ? "Vendor change updated." : "Vendor change saved."); setForm(null); } return res; }} />
       )}
-      {view && <PreviewModal title={`Costing ${view.ref || ""}`} html={costingHtml(view, logoUrl())} onClose={() => setView(null)} notify={notify} />}
-      {summary && <PreviewModal title="Costing summary" html={costingSummaryHtml(rows, logoUrl())} onClose={() => setSummary(false)} notify={notify} />}
+      {view && <PreviewModal title={`Costing ${view.ref || ""}`} html={costingHtml(view, logoUrl())} model={costingModel(view)} onClose={() => setView(null)} notify={notify} />}
+      {summary && <PreviewModal title="Costing summary" html={costingSummaryHtml(rows, logoUrl())} model={costingSummaryModel(rows)} onClose={() => setSummary(false)} notify={notify} />}
       {del && (
         <ConfirmModal title="Delete vendor change?" message={`Delete ${del.ref} (${del.item})? This cannot be undone.`} onCancel={() => setDel(null)}
           onConfirm={async () => { const r = del; setDel(null); const res = await remove(r.id); notify && notify(res.error ? "Could not delete: " + res.error : "Vendor change deleted."); }} />
@@ -632,7 +659,7 @@ export function BottleneckPage({ isAdmin, projects, notify }) {
   return (
     <div className="space-y-4">
       <PageHeader title="Bottleneck — Project Studies" icon={Gauge} isAdmin={isAdmin} createLabel="New Project Study" onCreate={() => setForm({ record: null })}
-        hint="Enter the project, its duration, the improvements made and each bottleneck with its solution — the study is laid out as a document you can print or save as a PDF." />
+        hint="Enter the project, its duration, the improvements made and each bottleneck with its solution — the study is laid out as a document you can download as Word or PDF." />
       <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-[12.5px]" data-testid="bn-table">
@@ -648,7 +675,7 @@ export function BottleneckPage({ isAdmin, projects, notify }) {
                   <td className="px-3 py-2.5 text-slate-500">{r.duration || "—"}</td>
                   <td className="px-3 py-2.5 font-mono text-slate-500">{(r.improvements || []).length}</td>
                   <td className="px-3 py-2.5 font-mono text-slate-500">{(r.points || []).length}</td>
-                  <td className="px-3 py-2.5"><RowActions isAdmin={isAdmin} label={r.ref} onView={() => setView(r)} onEdit={() => setForm({ record: r })} onDelete={() => setDel(r)} /></td>
+                  <td className="px-3 py-2.5"><RowActions isAdmin={isAdmin} label={r.ref} notify={notify} model={bottleneckModel(r)} onView={() => setView(r)} onEdit={() => setForm({ record: r })} onDelete={() => setDel(r)} /></td>
                 </tr>
               ))}
             </tbody>
@@ -660,7 +687,7 @@ export function BottleneckPage({ isAdmin, projects, notify }) {
         <BottleneckForm initial={form.record} rows={rows} projects={projects} onClose={() => setForm(null)}
           onSave={async (row) => { const res = await save(row); if (!res.error) { notify && notify(form.record ? "Project study updated." : "Project study saved."); setForm(null); } return res; }} />
       )}
-      {view && <PreviewModal title={`Project study ${view.ref || ""}`} html={bottleneckHtml(view, logoUrl())} onClose={() => setView(null)} notify={notify} />}
+      {view && <PreviewModal title={`Project study ${view.ref || ""}`} html={bottleneckHtml(view, logoUrl())} model={bottleneckModel(view)} onClose={() => setView(null)} notify={notify} />}
       {del && (
         <ConfirmModal title="Delete project study?" message={`Delete ${del.ref} (${del.project_name})? This cannot be undone.`} onCancel={() => setDel(null)}
           onConfirm={async () => { const r = del; setDel(null); const res = await remove(r.id); notify && notify(res.error ? "Could not delete: " + res.error : "Project study deleted."); }} />
