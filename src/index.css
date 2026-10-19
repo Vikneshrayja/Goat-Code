@@ -52,15 +52,8 @@ body { margin: 0; background: var(--gt-grey-050); }
 
 .gt-sidebar-glossy {
   position: relative;
-  background: linear-gradient(160deg, var(--gt-sidebar-from, #24614a) 0%, var(--gt-green) 38%, var(--gt-sidebar-to, #123424) 75%, var(--gt-green-deep) 100%);
+  background: var(--gt-sidebar-color, #2F6F51);
   filter: brightness(var(--gt-sidebar-brightness, 1));
-}
-.gt-sidebar-glossy::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(115deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.05) 22%, rgba(255,255,255,0) 46%);
-  pointer-events: none;
 }
 .gt-sidebar-glossy::after {
   content: "";

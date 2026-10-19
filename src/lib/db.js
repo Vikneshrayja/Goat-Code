@@ -1,45 +1,15 @@
 import { createClient } from "@supabase/supabase-js";
 
 /* -------------------------------------------------------------------------
- * Shared database layer
+ * Shared database layer (Supabase)
  * -------------------------------------------------------------------------
- * Point 8: "connect this with a database so every ID can see updates
- * without logging in, on the Vercel app."
+ * Run supabase/migration.sql once in the Supabase SQL editor. It creates the
+ * employees / tasks / profiles / invites tables and replaces the old
+ * "public read / public write" policies with approval-based row level
+ * security, enforced by the database itself.
  *
- * To turn this on:
- *  1. Create a free project at https://supabase.com
- *  2. In the SQL editor, run:
- *
- *     create table projects (
- *       id text primary key,
- *       name text, "projectNumber" text, mode text, variants text,
- *       payload text, custom text, manufacturing text,
- *       department text, team text,
- *       "startDate" text, "endDate" text,
- *       priority text, status text, remarks text, progress int,
- *       "createdDate" text, "updatedDate" text
- *     );
- *     create table notifications (
- *       id text primary key,
- *       message text, time text, read boolean default false,
- *       "projectId" text, page text
- *     );
- *     alter table projects enable row level security;
- *     alter table notifications enable row level security;
- *     create policy "public read" on projects for select using (true);
- *     create policy "public read" on notifications for select using (true);
- *     create policy "public write" on projects for all using (true);
- *     create policy "public write" on notifications for all using (true);
- *
- *  3. In Vercel → Project → Settings → Environment Variables add:
- *       VITE_SUPABASE_URL      = https://xxxx.supabase.co
- *       VITE_SUPABASE_ANON_KEY = the "anon public" key
- *     (Also add them to a local .env file for `npm run dev`.)
- *  4. Redeploy. Every visitor now reads/writes the same live data —
- *     viewing never requires login; only Create / Edit / Delete do.
- *
- * Until those env vars are set, everything below falls back to
- * localStorage so the app works exactly as it did before.
+ * Vercel env vars: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY (anon key only;
+ * never put a service-role key in frontend code).
  * ---------------------------------------------------------------------- */
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -77,24 +47,22 @@ export async function fetchProjects(seedFn) {
     writeLocal(LOCAL_PROJECTS_KEY, seed);
     return seed;
   }
+  // Real database: never substitute demo data. Errors propagate to the caller.
   const { data, error } = await supabase.from("projects").select("*");
-  if (error || !data || data.length === 0) {
-    const seed = seedFn();
-    if (!error) await supabase.from("projects").upsert(seed);
-    return seed;
-  }
-  return data;
+  if (error) throw error;
+  return data || [];
 }
 
 export async function saveProjects(next) {
-  writeLocal(LOCAL_PROJECTS_KEY, next);
-  if (!isDbConfigured) return;
-  await supabase.from("projects").upsert(next);
+  if (!isDbConfigured) { writeLocal(LOCAL_PROJECTS_KEY, next); return; }
+  const { error } = await supabase.from("projects").upsert(next);
+  if (error) throw error;
 }
 
 export async function deleteProjectRemote(id) {
   if (!isDbConfigured) return;
-  await supabase.from("projects").delete().eq("id", id);
+  const { error } = await supabase.from("projects").delete().eq("id", id);
+  if (error) throw error;
 }
 
 export function subscribeProjects(onChange) {
@@ -119,8 +87,7 @@ export async function fetchNotifications() {
 }
 
 export async function saveNotifications(next) {
-  writeLocal(LOCAL_NOTIFS_KEY, next);
-  if (!isDbConfigured) return;
+  if (!isDbConfigured) { writeLocal(LOCAL_NOTIFS_KEY, next); return; }
   await supabase.from("notifications").upsert(next);
 }
 
@@ -131,4 +98,147 @@ export function subscribeNotifications(onChange) {
     .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, onChange)
     .subscribe();
   return () => supabase.removeChannel(channel);
+}
+
+/* ------------------------- employees & tasks ---------------------------- */
+// Both live only in the database (no local fallback), so every manufacturing
+// page reads exactly the records Task Feeds writes.
+
+function need() {
+  if (!supabase) throw new Error("Database is not configured.");
+  return supabase;
+}
+
+export async function fetchEmployees() {
+  const { data, error } = await need().from("employees").select("*").order("name");
+  if (error) throw error;
+  return data || [];
+}
+export async function createEmployee(emp) {
+  const { data, error } = await need().from("employees").insert(emp).select().single();
+  if (error) throw error;
+  return data;
+}
+export async function deleteEmployee(id) {
+  const { error } = await need().from("employees").delete().eq("id", id);
+  if (error) throw error;
+}
+export async function fetchTasks() {
+  const { data, error } = await need().from("tasks").select("*");
+  if (error) throw error;
+  return data || [];
+}
+export async function upsertTask(task) {
+  const { data, error } = await need().from("tasks").upsert(task).select().single();
+  if (error) throw error;
+  return data;
+}
+export async function deleteTask(id) {
+  const { error } = await need().from("tasks").delete().eq("id", id);
+  if (error) throw error;
+}
+export function subscribeTable(table, onChange) {
+  if (!isDbConfigured) return () => {};
+  const channel = supabase
+    .channel(`${table}-changes`)
+    .on("postgres_changes", { event: "*", schema: "public", table }, onChange)
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
+/* ------------------------------ auth & users ---------------------------- */
+// Passwords are handled entirely by Supabase Auth (hashed server-side).
+// Access is decided by public.profiles.status, which RLS checks in the
+// database, so hiding a page in the UI is never the only protection.
+
+export async function signIn(email, password) {
+  const { error } = await need().auth.signInWithPassword({ email, password });
+  if (error) throw error;
+}
+export async function signUp(name, email, password) {
+  const { data, error } = await need().auth.signUp({
+    email, password, options: { data: { name } },
+  });
+  if (error) throw error;
+  return data; // data.session is null while email confirmation is pending
+}
+export async function signOut() {
+  if (supabase) await supabase.auth.signOut();
+}
+export async function getSessionUser() {
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getSession();
+  return data.session?.user || null;
+}
+export function onAuthChange(cb) {
+  if (!supabase) return () => {};
+  const { data } = supabase.auth.onAuthStateChange((_evt, session) => cb(session?.user || null));
+  return () => data.subscription.unsubscribe();
+}
+export async function fetchMyProfile(userId) {
+  const { data, error } = await need().from("profiles").select("*").eq("id", userId).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+export async function fetchProfiles() {
+  const { data, error } = await need().from("profiles").select("*").order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+export async function updateProfile(id, patch) {
+  const { error } = await need().from("profiles").update(patch).eq("id", id);
+  if (error) throw error;
+}
+export async function adminDeleteUser(id) {
+  const { error } = await need().rpc("admin_delete_user", { target: id });
+  if (error) throw error;
+}
+export async function fetchInvites() {
+  const { data, error } = await need().from("invites").select("*").order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+export async function addInvite(inv) {
+  const { error } = await need().from("invites").insert(inv);
+  if (error) throw error;
+}
+export async function deleteInvite(email) {
+  const { error } = await need().from("invites").delete().eq("email", email);
+  if (error) throw error;
+}
+
+/* ------------------------------- documents ------------------------------- */
+// Documents -> RCA / Costing / Bottleneck. Tables: rca_reports,
+// costing_records, bottleneck_studies (supabase/documents.sql). Approved
+// users read; administrators write (enforced by row-level security).
+// In local development mode (no database) records are kept in localStorage
+// so the pages can still be tried out.
+
+const docKey = (table) => `gt_dashboard_doc_${table}_v1`;
+
+export async function fetchDocs(table) {
+  if (!isDbConfigured) return readLocal(docKey(table), []);
+  const { data, error } = await supabase.from(table).select("*").order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function upsertDoc(table, row) {
+  if (!isDbConfigured) {
+    const list = readLocal(docKey(table), []);
+    writeLocal(docKey(table), [row, ...list.filter((r) => r.id !== row.id)]);
+    return row;
+  }
+  const { data, error } = await supabase.from(table).upsert(row).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteDoc(table, id) {
+  if (!isDbConfigured) {
+    writeLocal(docKey(table), readLocal(docKey(table), []).filter((r) => r.id !== id));
+    return;
+  }
+  const { error } = await supabase.from(table).delete().eq("id", id);
+  if (error) throw error;
 }

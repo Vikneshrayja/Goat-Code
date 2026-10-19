@@ -14,11 +14,19 @@ const TEAM_HEADER_FILL = "FF00537A";
 const TODAY_COL_FILL = "FFEAF3FB";
 
 const toDate = (s) => new Date(s + "T00:00:00");
-const todayISO = () => new Date().toISOString().slice(0, 10);
+// Format using LOCAL date parts — toISOString() converts to UTC, which shifts
+// the day back by one in zones ahead of UTC (e.g. IST) and stalls addDaysISO.
+const toISO = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+const todayISO = () => toISO(new Date());
 const addDaysISO = (s, n) => {
   const d = toDate(s);
   d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  return toISO(d);
 };
 const daysBetween = (a, b) => Math.round((toDate(b) - toDate(a)) / 86400000);
 const durationDays = (start, end) => daysBetween(start, end) + 1;
