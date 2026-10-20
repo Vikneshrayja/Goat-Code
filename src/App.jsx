@@ -8,7 +8,7 @@ import {
   Download, Upload, FileSpreadsheet, Flag, Lock, Mail, Eye, EyeOff, LogOut,
   ShieldCheck, LogIn, GitBranch, SlidersHorizontal, Users, UserPlus, KeyRound,
   ToggleLeft, PanelsTopLeft, Phone, Info, ChevronUp, GripVertical, Sparkles,
-  Save, Bookmark, Boxes, TrendingUp, Send, FileText, ClipboardCheck, Wallet, Gauge,
+  Save, Bookmark, Boxes, Send, FileText, ClipboardCheck, Wallet, Gauge,
 } from "lucide-react";
 import logo from "./assets/logo.png";
 import loginSplash from "./assets/login-splash.png";
@@ -27,7 +27,7 @@ import {
 } from "./lib/db";
 import { TaskFeedsPage, EmployeeAllocationPage } from "./pages/Manufacturing";
 import { AuthorizedUsersPage, ApprovalPage } from "./pages/Access";
-import { RcaPage, CostingPage, BottleneckPage, ScrapPage, MaterialPricePage } from "./pages/Documents";
+import { RcaPage, CostingPage, BottleneckPage, ScrapPage } from "./pages/Documents";
 
 /* ----------------------------- constants ----------------------------- */
 
@@ -100,7 +100,6 @@ const NAV_TREE = [
       { key: "documents.costing", label: "Costing", icon: Wallet },
       { key: "documents.bottleneck", label: "Bottleneck", icon: Gauge },
       { key: "documents.scrap", label: "Scrap / Wastage", icon: Boxes },
-      { key: "documents.materialprice", label: "Material Price", icon: TrendingUp },
     ],
   },
   {
@@ -961,9 +960,6 @@ function PageRouter(props) {
   }
   if (page === "documents.costing") {
     return <CostingPage isAdmin={isAdmin} projects={projects} notify={notify} />;
-  }
-  if (page === "documents.materialprice") {
-    return <MaterialPricePage isAdmin={isAdmin} notify={notify} />;
   }
   if (page === "documents.scrap") {
     return <ScrapPage isAdmin={isAdmin} projects={projects} notify={notify} />;

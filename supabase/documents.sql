@@ -74,16 +74,17 @@ create table if not exists public.scrap_wastage (
   updated_at timestamptz
 );
 
--- ------------------------------------------------------- Material prices
--- A material's price over time; each entry applies from effective_date.
-create table if not exists public.material_prices (
+-- Scrap components: one record = one project with several components.
+alter table public.scrap_wastage add column if not exists components jsonb not null default '[]'::jsonb;
+-- [{"component":"Bracket","material_name":"MS","weight":2.5,"weight_unit":"kg","price_per_kg":55,"amount":137.5,"currency":"INR"}]
+
+-- ----------------------------------- Scrap materials & current market cost
+create table if not exists public.scrap_materials (
   id text primary key,
-  material_name text,
-  price numeric,
-  price_unit text default 'kg',     -- kg | g | ton
+  name text not null,
+  price_per_kg numeric not null default 0,
   currency text default 'INR',
-  effective_date text,
-  note text,
+  history jsonb not null default '[]'::jsonb,   -- [{"date":"2026-10-20","price":55}]
   created_at timestamptz not null default now(),
   updated_at timestamptz
 );
@@ -93,7 +94,7 @@ create table if not exists public.material_prices (
 do $$
 declare t text;
 begin
-  foreach t in array array['rca_reports','costing_records','bottleneck_studies','scrap_wastage','material_prices'] loop
+  foreach t in array array['rca_reports','costing_records','bottleneck_studies','scrap_wastage','scrap_materials'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('drop policy if exists %I on public.%I', t||'_read', t);
     execute format('drop policy if exists %I on public.%I', t||'_write', t);
@@ -108,7 +109,7 @@ do $$ begin
   begin alter publication supabase_realtime add table public.costing_records;    exception when duplicate_object then null; end;
   begin alter publication supabase_realtime add table public.bottleneck_studies; exception when duplicate_object then null; end;
   begin alter publication supabase_realtime add table public.scrap_wastage;      exception when duplicate_object then null; end;
-  begin alter publication supabase_realtime add table public.material_prices;    exception when duplicate_object then null; end;
+  begin alter publication supabase_realtime add table public.scrap_materials;   exception when duplicate_object then null; end;
 end $$;
 
 notify pgrst, 'reload schema';

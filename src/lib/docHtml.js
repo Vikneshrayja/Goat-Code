@@ -174,17 +174,31 @@ export function bottleneckHtml(r, logoUrl) {
 export const WEIGHT_UNITS = { kg: 1, g: 0.001, ton: 1000 };
 export const DOWNTIME_UNITS = { Minutes: 1 / 60, Hours: 1, Days: 24 };
 const numFmt = (v) => (isFinite(Number(v)) ? Number(v).toLocaleString("en-IN", { maximumFractionDigits: 3 }) : "—");
-export const weightKg = (r) => (Number(r.weight) || 0) * (WEIGHT_UNITS[r.weight_unit || "kg"] ?? 1);
+// A scrap record holds one or more components (each with its own material and
+// weight). Records saved before components existed are read as one component.
+export const itemKg = (it) => (Number(it.weight) || 0) * (WEIGHT_UNITS[it.weight_unit || "kg"] ?? 1);
+export const scrapItems = (r) => (Array.isArray(r.components) && r.components.length
+  ? r.components
+  : [{ component: "", material_name: r.material_name, weight: r.weight, weight_unit: r.weight_unit, amount: r.amount_loss, currency: r.currency }]);
+export const weightKg = (r) => scrapItems(r).reduce((a, it) => a + itemKg(it), 0);
+export const scrapLoss = (r) => {
+  const loss = {};
+  scrapItems(r).forEach((it) => { const c = it.currency || r.currency || "INR"; loss[c] = (loss[c] || 0) + (Number(it.amount) || 0); });
+  return loss;
+};
 export const downtimeHours = (r) => (Number(r.downtime_value) || 0) * (DOWNTIME_UNITS[r.downtime_unit || "Hours"] ?? 1);
-export const weightText = (r) => `${numFmt(r.weight)} ${r.weight_unit || "kg"}`;
+export const weightText = (r) => {
+  const items = scrapItems(r);
+  return items.length === 1 ? `${numFmt(items[0].weight)} ${items[0].weight_unit || "kg"}` : `${numFmt(weightKg(r))} kg`;
+};
+export const componentsText = (r) => scrapItems(r).map((it) => [it.component, it.material_name].filter(Boolean).join(" — ")).filter(Boolean).join("\n");
 export const downtimeText = (r) => `${numFmt(r.downtime_value)} ${r.downtime_unit || "Hours"}`;
 export const hoursText = (h) => `${numFmt(h)} hrs`;
 export const scrapTotals = (rows) => {
   const loss = {};
   let kg = 0, hrs = 0;
   rows.forEach((r) => {
-    const c = r.currency || "INR";
-    loss[c] = (loss[c] || 0) + (Number(r.amount_loss) || 0);
+    Object.entries(scrapLoss(r)).forEach(([c, v]) => { loss[c] = (loss[c] || 0) + v; });
     kg += weightKg(r); hrs += downtimeHours(r);
   });
   return { loss, kg, hrs };
@@ -277,9 +291,22 @@ export function scrapGroups(rows, keyFn) {
   rows.forEach((r) => {
     const k = String(keyFn(r) || "").trim() || "(not set)";
     const o = g[k] || (g[k] = { name: k, count: 0, kg: 0, hrs: 0, loss: {} });
-    const c = r.currency || "INR";
     o.count++; o.kg += weightKg(r); o.hrs += downtimeHours(r);
-    o.loss[c] = (o.loss[c] || 0) + (Number(r.amount_loss) || 0);
+    Object.entries(scrapLoss(r)).forEach(([c, v]) => { o.loss[c] = (o.loss[c] || 0) + v; });
+  });
+  return Object.values(g).sort((a, b) => sumLoss(b.loss) - sumLoss(a.loss) || a.name.localeCompare(b.name));
+}
+// Scrap grouped by material: every component line counts under its own material.
+export function scrapMaterialGroups(rows) {
+  const g = {};
+  rows.forEach((r) => {
+    scrapItems(r).forEach((it) => {
+      const k = String(it.material_name || "").trim() || "(not set)";
+      const o = g[k] || (g[k] = { name: k, count: 0, kg: 0, hrs: 0, loss: {} });
+      const c = it.currency || r.currency || "INR";
+      o.count++; o.kg += itemKg(it);
+      o.loss[c] = (o.loss[c] || 0) + (Number(it.amount) || 0);
+    });
   });
   return Object.values(g).sort((a, b) => sumLoss(b.loss) - sumLoss(a.loss) || a.name.localeCompare(b.name));
 }

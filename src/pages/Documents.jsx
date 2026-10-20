@@ -6,12 +6,12 @@ import logo from "../assets/logo.png";
 import { Field, SectionHeading, ConfirmModal, todayISO, durationDays } from "../shared";
 import { fetchDocs, upsertDoc, deleteDoc, subscribeTable } from "../lib/db";
 import {
-  RCA_SIGNERS, rcaHtml, costingHtml, bottleneckHtml, scrapHtml, printHtml,
+  RCA_SIGNERS, rcaHtml, costingHtml, bottleneckHtml, printHtml,
   WEIGHT_UNITS, DOWNTIME_UNITS, scrapTotals, weightText, downtimeText, hoursText,
-  weightKg, pricePerKg, priceText, priceAt, annotatePrices, changeText, norm,
+  norm, scrapItems, itemKg, componentsText,
   fmtDateTime, money, costSaving, costSavingPct, CURRENCIES,
 } from "../lib/docHtml";
-import { rcaModel, costingModel, bottleneckModel, scrapModel, scrapOverallModel, costingOverallModel, priceHistoryModel, periodLabel, modelHtml, downloadWord, downloadPdf } from "../lib/docExport";
+import { rcaModel, costingModel, bottleneckModel, scrapModel, scrapOverallModel, costingOverallModel, periodLabel, modelHtml, downloadWord, downloadPdf } from "../lib/docExport";
 
 /* ============================ shared plumbing ============================ */
 
@@ -727,43 +727,195 @@ export function BottleneckPage({ isAdmin, projects, notify }) {
 
 
 /* ============================ Scrap / Wastage ============================ */
+// One scrap record = one project with one or more components. Each component
+// has a material and a weight; its loss = weight (in kg) x the material's
+// current market cost per kg (set in "Materials & market cost" on this page).
 
-function ScrapForm({ initial, rows, projects, prices, onClose, onSave }) {
-  const [f, setF] = useState(() => initial ? { ...initial } : {
-    scrap_date: todayISO(), project_name: "", material_name: "", designer_name: "",
-    weight: "", weight_unit: "kg", amount_loss: "", currency: "INR", downtime_value: "", downtime_unit: "Hours",
-  });
+const r2 = (n) => Math.round(n * 100) / 100;
+const newKey = () => Math.random().toString(36).slice(2, 9);
+const blankItem = () => ({ _k: newKey(), component: "", material_name: "", weight: "", weight_unit: "kg", price_per_kg: 0, amount: "", currency: "INR" });
+
+// Price one component line from the material list.
+function priceItem(it, materials) {
+  const m = (materials || []).find((x) => norm(x.name) === norm(it.material_name));
+  const pk = m ? Number(m.price_per_kg) || 0 : 0;
+  if (!m || pk <= 0) return { ...it, price_per_kg: 0 };
+  return { ...it, price_per_kg: pk, currency: m.currency || "INR", amount: r2(itemKg(it) * pk) };
+}
+
+function histChange(hist) {
+  const h = Array.isArray(hist) ? hist : [];
+  if (h.length < 2) return null;
+  const prev = Number(h[h.length - 2].price), cur = Number(h[h.length - 1].price);
+  if (cur === prev) return { dir: "No change", pct: 0 };
+  return { dir: cur > prev ? "Increase" : "Decrease", pct: prev > 0 ? ((cur - prev) / prev) * 100 : null };
+}
+function ChangeBadge({ a }) {
+  if (!a) return <span className="text-[11px] text-slate-300">—</span>;
+  const pct = a.pct == null ? "" : ` ${a.pct >= 0 ? "+" : ""}${a.pct.toFixed(1)}%`;
+  if (a.dir === "Increase") return <span className="inline-flex items-center gap-0.5 text-[11px] px-2 py-0.5 rounded-full bg-red-50 text-red-600 whitespace-nowrap"><ArrowUp size={11} />Increase{pct}</span>;
+  if (a.dir === "Decrease") return <span className="inline-flex items-center gap-0.5 text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 whitespace-nowrap"><ArrowDown size={11} />Decrease{pct}</span>;
+  return <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 whitespace-nowrap">No change</span>;
+}
+
+function MaterialForm({ initial, materials, presetName, onClose, onSave }) {
+  const [f, setF] = useState(() => initial
+    ? { name: initial.name, price_per_kg: initial.price_per_kg, currency: initial.currency || "INR" }
+    : { name: presetName || "", price_per_kg: "", currency: "INR" });
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(false);
-  // Amount loss follows the material price in force on the scrap date until the
-  // user types an amount themselves (existing records start in "manual").
-  const [manual, setManual] = useState(!!initial);
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
-  const priceRec = useMemo(() => priceAt(prices, f.material_name, f.scrap_date), [prices, f.material_name, f.scrap_date]);
-  const priceNote = useMemo(() => (priceRec ? changeText(annotatePrices(prices)[priceRec.id]) : ""), [prices, priceRec]);
-  const auto = priceRec && f.weight !== "" && Number(f.weight) >= 0 ? Math.round(weightKg(f) * pricePerKg(priceRec) * 100) / 100 : null;
-  useEffect(() => {
-    if (!manual && auto != null) setF((x) => (x.amount_loss === auto && x.currency === priceRec.currency ? x : { ...x, amount_loss: auto, currency: priceRec.currency || x.currency }));
-  }, [auto, manual, priceRec]);
-  const materialNames = useMemo(() => [...new Set((prices || []).map((p) => p.material_name).filter(Boolean))], [prices]);
+
+  const submit = async () => {
+    const e = {};
+    const name = String(f.name || "").trim();
+    if (!name) e.name = "Material name is required.";
+    else if ((materials || []).some((m) => norm(m.name) === norm(name) && (!initial || m.id !== initial.id))) e.name = "This material already exists.";
+    if (f.price_per_kg === "" || !(Number(f.price_per_kg) >= 0)) e.price = "Enter the cost per kg.";
+    setErrors(e);
+    if (Object.keys(e).length) return;
+    setBusy(true);
+    const now = nowISO(), price = Number(f.price_per_kg);
+    const hist = Array.isArray(initial?.history) ? initial.history : [];
+    const row = initial
+      ? { ...initial, name, price_per_kg: price, currency: f.currency, updated_at: now,
+          history: price !== Number(initial.price_per_kg) ? [...hist, { date: todayISO(), price }] : hist }
+      : { id: newId("MAT"), name, price_per_kg: price, currency: f.currency, history: [{ date: todayISO(), price }], created_at: now, updated_at: now };
+    const res = await onSave(row);
+    setBusy(false);
+    if (res.error) setErrors({ _form: res.error });
+  };
+
+  return (
+    <Modal title={initial ? "Edit material" : "New material"} icon={Boxes} onClose={onClose}
+      footer={<>
+        <button onClick={onClose} className="text-[13px] px-3.5 py-1.5 rounded-md text-slate-500 hover:bg-slate-100 cursor-pointer">Cancel</button>
+        <button data-testid="mat-save" disabled={busy} onClick={submit} className="text-[13px] px-4 py-1.5 rounded-md bg-turkish hover:bg-turkish-deep text-white font-medium cursor-pointer disabled:opacity-60">Save</button>
+      </>}>
+      <Field label="Material Name" error={errors.name}>
+        <input data-testid="mat-name" value={f.name} onChange={(e) => set("name", e.target.value)} className="input" placeholder="e.g. MS, SS, Aluminium, Copper" />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Current market cost per kg" error={errors.price}>
+          <input data-testid="mat-price" type="number" min="0" step="any" value={f.price_per_kg} onChange={(e) => set("price_per_kg", e.target.value)} className="input" />
+        </Field>
+        <Field label="Currency">
+          <select value={f.currency} onChange={(e) => set("currency", e.target.value)} className="input">
+            {Object.keys(CURRENCIES).map((c) => <option key={c} value={c}>{c} ({CURRENCIES[c].symbol})</option>)}
+          </select>
+        </Field>
+      </div>
+      <div className="text-[11.5px] text-slate-400">Changing the cost later keeps a history and shows Increase / Decrease. Scrap records already saved keep the cost they were calculated with.</div>
+      {errors._form && <div className="text-[12px] text-red-500">{errors._form}</div>}
+    </Modal>
+  );
+}
+
+function MaterialsPanel({ isAdmin, store, notify }) {
+  const [form, setForm] = useState(null);   // { record, preset }
+  const [del, setDel] = useState(null);
+  const list = useMemo(() => [...store.rows].sort((a, b) => String(a.name).toLowerCase().localeCompare(String(b.name).toLowerCase())), [store.rows]);
+  return (
+    <div className="bg-white rounded-lg border border-slate-200" data-testid="materials-panel">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-slate-100">
+        <div>
+          <div className="text-[13px] font-display font-semibold text-slate-800">Materials &amp; current market cost</div>
+          <div className="text-[11.5px] text-slate-400">Set each material's cost per kg. Scrap loss = weight (in kg) × this cost, worked out automatically.</div>
+        </div>
+        {isAdmin && (
+          <button data-testid="mat-add" onClick={() => setForm({ record: null, preset: "" })} className="flex items-center gap-1.5 text-[12.5px] text-slate-600 border border-slate-200 hover:border-turkish rounded-md px-3 py-1.5 cursor-pointer"><Plus size={13} /> Add material</button>
+        )}
+      </div>
+      {list.length === 0 ? (
+        <div className="px-4 py-5 text-[12.5px] text-slate-400">
+          {store.loading ? "Loading…" : "No materials yet."}
+          {!store.loading && isAdmin && (
+            <span> Quick add:{" "}
+              {["MS", "SS", "Aluminium", "Copper"].map((n) => (
+                <button key={n} onClick={() => setForm({ record: null, preset: n })} className="mx-1 px-2 py-0.5 rounded-full border border-slate-200 text-slate-600 hover:border-turkish cursor-pointer">{n}</button>
+              ))}
+            </span>
+          )}
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[12.5px]" data-testid="mat-table">
+            <thead><tr className="bg-slate-50 text-left text-[11px] text-slate-400 uppercase tracking-wide">
+              <Th>Material</Th><Th right>Cost per kg</Th><Th>Last change</Th><Th>Updated</Th><Th right>Actions</Th>
+            </tr></thead>
+            <tbody>
+              {list.map((m) => (
+                <tr key={m.id} className="border-t border-slate-50 hover:bg-slate-50/60">
+                  <td className="px-3 py-2.5 text-slate-700 font-medium">{m.name}</td>
+                  <td className="px-3 py-2.5 text-right font-mono text-slate-700 whitespace-nowrap">{money(m.price_per_kg, m.currency)} / kg</td>
+                  <td className="px-3 py-2.5"><ChangeBadge a={histChange(m.history)} /></td>
+                  <td className="px-3 py-2.5 font-mono text-slate-400">{(m.updated_at || "").slice(0, 10)}</td>
+                  <td className="px-3 py-2.5">
+                    {isAdmin && (
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => setForm({ record: m })} aria-label={`Edit ${m.name}`} title="Edit cost" className="p-1.5 rounded hover:bg-slate-100 text-slate-500 cursor-pointer"><Pencil size={13} /></button>
+                        <button onClick={() => setDel(m)} aria-label={`Delete ${m.name}`} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-slate-500 hover:text-red-500 cursor-pointer"><Trash2 size={13} /></button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {form && (
+        <MaterialForm initial={form.record} presetName={form.preset} materials={store.rows} onClose={() => setForm(null)}
+          onSave={async (row) => { const res = await store.save(row); if (!res.error) { notify && notify(form.record ? "Material updated." : "Material added."); setForm(null); } return res; }} />
+      )}
+      {del && (
+        <ConfirmModal title="Delete material?" message={`Delete ${del.name}? Scrap records already saved keep their figures.`} onCancel={() => setDel(null)}
+          onConfirm={async () => { const m = del; setDel(null); const res = await store.remove(m.id); notify && notify(res.error ? "Could not delete: " + res.error : "Material deleted."); }} />
+      )}
+    </div>
+  );
+}
+
+function ScrapForm({ initial, rows, projects, materials, onClose, onSave }) {
+  const [f, setF] = useState(() => initial ? { ...initial } : {
+    scrap_date: todayISO(), project_name: "", designer_name: "", downtime_value: "", downtime_unit: "Hours",
+  });
+  const [items, setItems] = useState(() => (initial ? scrapItems(initial).map((it) => ({ ...it, _k: newKey() })) : [blankItem()]));
+  const [errors, setErrors] = useState({});
+  const [busy, setBusy] = useState(false);
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  // reprice = true when material / weight / unit changed: amount is recalculated
+  const change = (k, patch, reprice) => setItems((list) => list.map((it) => (it._k !== k ? it : (reprice ? priceItem({ ...it, ...patch }, materials) : { ...it, ...patch }))));
+  const matNames = (materials || []).map((m) => m.name);
+
+  const kgTotal = items.reduce((a, it) => a + itemKg(it), 0);
+  const lossTotals = {};
+  items.forEach((it) => { const c = it.currency || "INR"; lossTotals[c] = (lossTotals[c] || 0) + (Number(it.amount) || 0); });
 
   const submit = async () => {
     const e = {};
     if (!f.scrap_date) e.scrap_date = "Date is required.";
     if (!String(f.project_name || "").trim()) e.project_name = "Project name is required.";
-    if (!String(f.material_name || "").trim()) e.material_name = "Material name is required.";
     if (!String(f.designer_name || "").trim()) e.designer_name = "Designer name is required.";
-    if (f.weight === "" || !(Number(f.weight) >= 0)) e.weight = "Enter the scrap weight.";
-    if (f.amount_loss === "" || !(Number(f.amount_loss) >= 0)) e.amount_loss = "Enter the amount loss.";
     if (f.downtime_value === "" || !(Number(f.downtime_value) >= 0)) e.downtime_value = "Enter the downtime (0 if none).";
+    const bad = items.findIndex((it) => !String(it.material_name || "").trim() || it.weight === "" || !(Number(it.weight) >= 0) || it.amount === "" || !(Number(it.amount) >= 0));
+    if (bad >= 0) e.items = `Component ${bad + 1}: choose a material, enter the weight${items[bad].price_per_kg > 0 ? "" : " and the amount loss"}.`;
     setErrors(e);
     if (Object.keys(e).length) return;
     setBusy(true);
     const now = nowISO();
+    const comps = items.map((it) => ({
+      component: String(it.component || "").trim(), material_name: it.material_name.trim(), weight: Number(it.weight), weight_unit: it.weight_unit,
+      price_per_kg: Number(it.price_per_kg) || 0, amount: Number(it.amount), currency: it.currency || "INR",
+    }));
     const row = {
       ...f,
-      project_name: f.project_name.trim(), material_name: f.material_name.trim(), designer_name: f.designer_name.trim(),
-      weight: Number(f.weight), amount_loss: Number(f.amount_loss), downtime_value: Number(f.downtime_value),
+      project_name: f.project_name.trim(), designer_name: f.designer_name.trim(), downtime_value: Number(f.downtime_value),
+      components: comps,
+      // totals kept on the record for lists and older reports
+      material_name: [...new Set(comps.map((c) => c.material_name))].join(", "),
+      weight: Number(kgTotal.toFixed(3)), weight_unit: "kg",
+      amount_loss: r2(comps.reduce((a, c) => a + c.amount, 0)), currency: comps[0].currency,
       id: f.id || newId("SCR"), ref: f.ref || nextRef("SCR", rows),
       created_at: f.created_at || now, updated_at: now,
     };
@@ -773,7 +925,7 @@ function ScrapForm({ initial, rows, projects, prices, onClose, onSave }) {
   };
 
   return (
-    <Modal
+    <Modal wide
       title={initial ? `Edit ${initial.ref || "scrap record"}` : "New Scrap / Wastage"} icon={Boxes} onClose={onClose}
       footer={<>
         <button onClick={onClose} className="text-[13px] px-3.5 py-1.5 rounded-md text-slate-500 hover:bg-slate-100 cursor-pointer">Cancel</button>
@@ -786,19 +938,7 @@ function ScrapForm({ initial, rows, projects, prices, onClose, onSave }) {
           <input data-testid="scr-project" value={f.project_name} list="scr-projects" onChange={(e) => set("project_name", e.target.value)} className="input" placeholder="Choose or type" />
           <datalist id="scr-projects">{(projects || []).map((p) => <option key={p.id} value={p.name} />)}</datalist>
         </Field>
-        <Field label="Material Name" error={errors.material_name}>
-          <input data-testid="scr-material" value={f.material_name} list="scr-materials" onChange={(e) => set("material_name", e.target.value)} className="input" placeholder="Choose or type" />
-          <datalist id="scr-materials">{materialNames.map((m) => <option key={m} value={m} />)}</datalist>
-        </Field>
         <Field label="Designer Name" error={errors.designer_name}><input data-testid="scr-designer" value={f.designer_name} onChange={(e) => set("designer_name", e.target.value)} className="input" /></Field>
-        <Field label="Weight" error={errors.weight}>
-          <div className="flex gap-2">
-            <input data-testid="scr-weight" type="number" min="0" step="any" value={f.weight} onChange={(e) => set("weight", e.target.value)} className="input flex-1" />
-            <select value={f.weight_unit} onChange={(e) => set("weight_unit", e.target.value)} className="input w-24">
-              {Object.keys(WEIGHT_UNITS).map((u) => <option key={u} value={u}>{u}</option>)}
-            </select>
-          </div>
-        </Field>
         <Field label="Downtime Duration" error={errors.downtime_value}>
           <div className="flex gap-2">
             <input data-testid="scr-downtime" type="number" min="0" step="any" value={f.downtime_value} onChange={(e) => set("downtime_value", e.target.value)} className="input flex-1" />
@@ -807,24 +947,65 @@ function ScrapForm({ initial, rows, projects, prices, onClose, onSave }) {
             </select>
           </div>
         </Field>
-        <Field label="Amount Loss" error={errors.amount_loss}>
-          <input data-testid="scr-loss" type="number" min="0" step="any" value={f.amount_loss} onChange={(e) => { setManual(true); set("amount_loss", e.target.value); }} className="input" />
-          {priceRec ? (
-            <div className="text-[11px] text-slate-400 mt-1" data-testid="scr-price-hint">
-              Material price {priceText(priceRec)} from {priceRec.effective_date}{priceNote && priceNote !== "Initial price" ? ` (${priceNote})` : ""}
-              {manual && auto != null && Number(f.amount_loss) !== auto && (
-                <button type="button" onClick={() => setManual(false)} className="ml-1.5 text-turkish-deep hover:underline cursor-pointer">Use calculated {money(auto, priceRec.currency)}</button>
-              )}
-            </div>
-          ) : String(f.material_name || "").trim() ? (
-            <div className="text-[11px] text-slate-400 mt-1">No price on file for this material on this date — enter the amount, or add the price under Material Price.</div>
-          ) : null}
-        </Field>
-        <Field label="Currency">
-          <select value={f.currency} onChange={(e) => set("currency", e.target.value)} className="input">
-            {Object.keys(CURRENCIES).map((c) => <option key={c} value={c}>{c} ({CURRENCIES[c].symbol})</option>)}
-          </select>
-        </Field>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[11.5px] font-medium text-slate-500">Components</div>
+          <button type="button" data-testid="scr-add-component" onClick={() => setItems((l) => [...l, blankItem()])} className="flex items-center gap-1 text-[12px] text-turkish-deep hover:underline cursor-pointer"><Plus size={13} /> Add component</button>
+        </div>
+        {matNames.length === 0 && <div className="text-[11.5px] text-amber-600 mb-2">No materials yet — add them first under “Materials &amp; market cost” on this page so the loss can be calculated.</div>}
+        <div className="space-y-2.5">
+          {items.map((it, i) => {
+            const priced = Number(it.price_per_kg) > 0;
+            return (
+              <div key={it._k} className="border border-slate-200 rounded-md p-2.5" data-testid={`scr-comp-${i}`}>
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
+                  <div className="md:col-span-3">
+                    <label className="text-[10.5px] text-slate-400 block mb-0.5">Component</label>
+                    <input value={it.component || ""} onChange={(e) => change(it._k, { component: e.target.value }, false)} className="input" placeholder="e.g. Bracket" aria-label={`Component ${i + 1} name`} />
+                  </div>
+                  <div className="md:col-span-3">
+                    <label className="text-[10.5px] text-slate-400 block mb-0.5">Material</label>
+                    <select data-testid={`scr-mat-${i}`} value={it.material_name} onChange={(e) => change(it._k, { material_name: e.target.value }, true)} className="input" aria-label={`Component ${i + 1} material`}>
+                      <option value="">Select…</option>
+                      {it.material_name && !matNames.some((n) => norm(n) === norm(it.material_name)) && <option value={it.material_name}>{it.material_name}</option>}
+                      {matNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </div>
+                  <div className="md:col-span-3">
+                    <label className="text-[10.5px] text-slate-400 block mb-0.5">Weight</label>
+                    <div className="flex gap-1.5">
+                      <input data-testid={`scr-w-${i}`} type="number" min="0" step="any" value={it.weight} onChange={(e) => change(it._k, { weight: e.target.value }, true)} className="input flex-1 min-w-0" aria-label={`Component ${i + 1} weight`} />
+                      <select value={it.weight_unit} onChange={(e) => change(it._k, { weight_unit: e.target.value }, true)} className="input w-[68px]" aria-label="Weight unit">
+                        {Object.keys(WEIGHT_UNITS).map((u) => <option key={u} value={u}>{u}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="md:col-span-3 flex items-end gap-1.5">
+                    <div className="flex-1 min-w-0">
+                      <label className="text-[10.5px] text-slate-400 block mb-0.5">Amount loss{priced ? ` (${money(it.price_per_kg, it.currency)}/kg)` : ""}</label>
+                      <input data-testid={`scr-amt-${i}`} type="number" min="0" step="any" value={it.amount} readOnly={priced}
+                        onChange={(e) => change(it._k, { amount: e.target.value }, false)}
+                        className={`input w-full ${priced ? "bg-slate-50 font-semibold text-red-600" : ""}`} aria-label={`Component ${i + 1} amount loss`} />
+                    </div>
+                    {items.length > 1 && (
+                      <button type="button" onClick={() => setItems((l) => l.filter((x) => x._k !== it._k))} aria-label={`Remove component ${i + 1}`} title="Remove component" className="p-2 rounded hover:bg-red-50 text-slate-400 hover:text-red-500 cursor-pointer"><Trash2 size={14} /></button>
+                    )}
+                  </div>
+                </div>
+                {it.material_name && !priced && <div className="text-[11px] text-slate-400 mt-1.5">No cost per kg set for this material — enter the amount manually, or set the cost under Materials &amp; market cost.</div>}
+              </div>
+            );
+          })}
+        </div>
+        {errors.items && <div className="text-[11px] text-red-500 mt-1.5">{errors.items}</div>}
+        <div className="flex flex-wrap items-center justify-between gap-2 mt-3 px-3 py-2 rounded-md bg-slate-50 text-[12.5px]" data-testid="scr-total">
+          <span className="text-slate-500">Total weight <span className="font-mono font-semibold text-slate-700">{Number(kgTotal.toFixed(3)).toLocaleString("en-IN")} kg</span></span>
+          <span className="text-slate-500">Total loss{" "}
+            {Object.keys(lossTotals).length === 0 ? "—" : Object.entries(lossTotals).map(([c, v]) => <span key={c} className="font-mono font-semibold text-red-600 ml-1">{money(v, c)}</span>)}
+          </span>
+        </div>
       </div>
       {errors._form && <div className="text-[12px] text-red-500">{errors._form}</div>}
     </Modal>
@@ -833,17 +1014,17 @@ function ScrapForm({ initial, rows, projects, prices, onClose, onSave }) {
 
 export function ScrapPage({ isAdmin, projects, notify }) {
   const { rows, loading, save, remove } = useDocs("scrap_wastage", notify);
+  const mats = useDocs("scrap_materials", notify);
   const [form, setForm] = useState(null);
   const [view, setView] = useState(null);
   const [del, setDel] = useState(null);
   const [summary, setSummary] = useState(false);
   const totals = useMemo(() => scrapTotals(rows), [rows]);
-  const priceStore = useDocs("material_prices", notify);
 
   return (
     <div className="space-y-4">
       <PageHeader title="Scrap / Wastage" icon={Boxes} isAdmin={isAdmin} createLabel="New Scrap Record" onCreate={() => setForm({ record: null })}
-        hint="Record scrap weight, material, project, designer, the amount lost and the downtime. Open any record to download it as Word or PDF, or print it."
+        hint="Add the components scrapped on a project with their material and weight. The loss is worked out from each material's current market cost per kg. Open any record to download it as Word or PDF, or print it."
         extra={rows.length > 0 && (
           <button onClick={() => setSummary(true)} className="flex items-center gap-1.5 text-[12.5px] text-slate-600 border border-slate-200 hover:border-turkish rounded-md px-3 py-2 cursor-pointer"><FileText size={14} /> Overall report</button>
         )} />
@@ -870,11 +1051,13 @@ export function ScrapPage({ isAdmin, projects, notify }) {
         </div>
       </div>
 
+      <MaterialsPanel isAdmin={isAdmin} store={mats} notify={notify} />
+
       <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-[12.5px]" data-testid="scr-table">
             <thead><tr className="bg-slate-50 text-left text-[11px] text-slate-400 uppercase tracking-wide">
-              <Th>Ref</Th><Th>Date</Th><Th>Project</Th><Th>Material</Th><Th>Designer</Th><Th right>Weight</Th><Th right>Downtime</Th><Th right>Amount Loss</Th><Th right>Actions</Th>
+              <Th>Ref</Th><Th>Date</Th><Th>Project</Th><Th>Components</Th><Th>Designer</Th><Th right>Weight</Th><Th right>Downtime</Th><Th right>Amount Loss</Th><Th right>Actions</Th>
             </tr></thead>
             <tbody>
               {rows.length === 0 && <Empty cols={9} loading={loading} text={"No scrap records yet." + (isAdmin ? " Use New Scrap Record to add one." : "")} />}
@@ -883,11 +1066,11 @@ export function ScrapPage({ isAdmin, projects, notify }) {
                   <td className="px-3 py-2.5 font-mono text-slate-500">{r.ref}</td>
                   <td className="px-3 py-2.5 font-mono text-slate-500">{r.scrap_date}</td>
                   <td className="px-3 py-2.5 text-slate-700">{r.project_name}</td>
-                  <td className="px-3 py-2.5 text-slate-500">{r.material_name}</td>
+                  <td className="px-3 py-2.5 text-slate-500 whitespace-pre-line">{componentsText(r) || r.material_name}</td>
                   <td className="px-3 py-2.5 text-slate-500">{r.designer_name}</td>
                   <td className="px-3 py-2.5 text-right font-mono text-slate-500 whitespace-nowrap">{weightText(r)}</td>
                   <td className="px-3 py-2.5 text-right font-mono text-slate-500 whitespace-nowrap">{downtimeText(r)}</td>
-                  <td className="px-3 py-2.5 text-right font-mono font-semibold text-red-600 whitespace-nowrap">{money(r.amount_loss, r.currency)}</td>
+                  <td className="px-3 py-2.5 text-right font-mono font-semibold text-red-600 whitespace-pre-line">{Object.entries(scrapTotals([r]).loss).map(([c, v]) => money(v, c)).join("\n")}</td>
                   <td className="px-3 py-2.5"><RowActions isAdmin={isAdmin} label={r.ref} notify={notify} model={scrapModel(r)} onView={() => setView(r)} onEdit={() => setForm({ record: r })} onDelete={() => setDel(r)} /></td>
                 </tr>
               ))}
@@ -897,164 +1080,14 @@ export function ScrapPage({ isAdmin, projects, notify }) {
       </div>
 
       {form && (
-        <ScrapForm initial={form.record} rows={rows} projects={projects} prices={priceStore.rows} onClose={() => setForm(null)}
+        <ScrapForm initial={form.record} rows={rows} projects={projects} materials={mats.rows} onClose={() => setForm(null)}
           onSave={async (row) => { const res = await save(row); if (!res.error) { notify && notify(form.record ? "Scrap record updated." : "Scrap record saved."); setForm(null); } return res; }} />
       )}
-      {view && <PreviewModal title={`Scrap ${view.ref || ""}`} html={scrapHtml(view, logoUrl())} model={scrapModel(view)} onClose={() => setView(null)} notify={notify} />}
+      {view && (() => { const m = scrapModel(view); return <PreviewModal title={`Scrap ${view.ref || ""}`} html={modelHtml(m, logoUrl())} model={m} onClose={() => setView(null)} notify={notify} />; })()}
       {summary && <OverallReport kind="scrap" rows={rows} onClose={() => setSummary(false)} notify={notify} />}
       {del && (
-        <ConfirmModal title="Delete scrap record?" message={`Delete ${del.ref} (${del.material_name})? This cannot be undone.`} onCancel={() => setDel(null)}
+        <ConfirmModal title="Delete scrap record?" message={`Delete ${del.ref} (${del.project_name})? This cannot be undone.`} onCancel={() => setDel(null)}
           onConfirm={async () => { const r = del; setDel(null); const res = await remove(r.id); notify && notify(res.error ? "Could not delete: " + res.error : "Scrap record deleted."); }} />
-      )}
-    </div>
-  );
-}
-
-
-/* ============================== Material Price ============================== */
-
-function ChangeBadge({ a }) {
-  if (!a) return null;
-  if (a.dir === "Increase") return <span className="inline-flex items-center gap-0.5 text-[11px] px-2 py-0.5 rounded-full bg-red-50 text-red-600 whitespace-nowrap"><ArrowUp size={11} />{changeText(a)}</span>;
-  if (a.dir === "Decrease") return <span className="inline-flex items-center gap-0.5 text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 whitespace-nowrap"><ArrowDown size={11} />{changeText(a)}</span>;
-  return <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 whitespace-nowrap">{changeText(a)}</span>;
-}
-
-function PriceForm({ initial, prices, onClose, onSave }) {
-  const [f, setF] = useState(() => initial ? { ...initial } : { material_name: "", price: "", price_unit: "kg", currency: "INR", effective_date: todayISO(), note: "" });
-  const [errors, setErrors] = useState({});
-  const [busy, setBusy] = useState(false);
-  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
-  const names = useMemo(() => [...new Set((prices || []).map((p) => p.material_name).filter(Boolean))], [prices]);
-
-  const submit = async () => {
-    const e = {};
-    if (!String(f.material_name || "").trim()) e.material_name = "Material name is required.";
-    if (f.price === "" || !(Number(f.price) >= 0)) e.price = "Enter the price.";
-    if (!f.effective_date) e.effective_date = "Effective date is required.";
-    setErrors(e);
-    if (Object.keys(e).length) return;
-    setBusy(true);
-    const now = nowISO();
-    const res = await onSave({
-      ...f, material_name: f.material_name.trim(), price: Number(f.price),
-      id: f.id || newId("MPR"), created_at: f.created_at || now, updated_at: now,
-    });
-    setBusy(false);
-    if (res.error) setErrors({ _form: res.error });
-  };
-
-  return (
-    <Modal title={initial ? "Edit material price" : "New material price"} icon={TrendingUp} onClose={onClose}
-      footer={<>
-        <button onClick={onClose} className="text-[13px] px-3.5 py-1.5 rounded-md text-slate-500 hover:bg-slate-100 cursor-pointer">Cancel</button>
-        <button data-testid="doc-save" disabled={busy} onClick={submit} className="text-[13px] px-4 py-1.5 rounded-md bg-turkish hover:bg-turkish-deep text-white font-medium cursor-pointer disabled:opacity-60">Save</button>
-      </>}>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div className="sm:col-span-2">
-          <Field label="Material Name" error={errors.material_name}>
-            <input data-testid="mp-material" value={f.material_name} list="mp-materials" onChange={(e) => set("material_name", e.target.value)} className="input" placeholder="Choose existing or type a new material" />
-            <datalist id="mp-materials">{names.map((m) => <option key={m} value={m} />)}</datalist>
-          </Field>
-        </div>
-        <Field label="Price" error={errors.price}>
-          <div className="flex gap-2">
-            <input data-testid="mp-price" type="number" min="0" step="any" value={f.price} onChange={(e) => set("price", e.target.value)} className="input flex-1" />
-            <select value={f.price_unit} onChange={(e) => set("price_unit", e.target.value)} className="input w-24" aria-label="Price per">
-              {Object.keys(WEIGHT_UNITS).map((u) => <option key={u} value={u}>per {u}</option>)}
-            </select>
-          </div>
-        </Field>
-        <Field label="Currency">
-          <select value={f.currency} onChange={(e) => set("currency", e.target.value)} className="input">
-            {Object.keys(CURRENCIES).map((c) => <option key={c} value={c}>{c} ({CURRENCIES[c].symbol})</option>)}
-          </select>
-        </Field>
-        <Field label="Effective From" error={errors.effective_date}><input type="date" value={f.effective_date} onChange={(e) => set("effective_date", e.target.value)} className="input" /></Field>
-        <Field label="Note"><input value={f.note || ""} onChange={(e) => set("note", e.target.value)} className="input" placeholder="e.g. supplier revision" /></Field>
-      </div>
-      {errors._form && <div className="text-[12px] text-red-500">{errors._form}</div>}
-    </Modal>
-  );
-}
-
-export function MaterialPricePage({ isAdmin, notify }) {
-  const { rows, loading, save, remove } = useDocs("material_prices", notify);
-  const [form, setForm] = useState(null);
-  const [del, setDel] = useState(null);
-  const [report, setReport] = useState(false);
-  const ann = useMemo(() => annotatePrices(rows), [rows]);
-  const sorted = useMemo(() => [...rows].sort((a, b) =>
-    String(a.material_name).toLowerCase().localeCompare(String(b.material_name).toLowerCase()) ||
-    String(b.effective_date).localeCompare(String(a.effective_date)) || String(b.created_at).localeCompare(String(a.created_at))), [rows]);
-  // newest entry for each material
-  const current = useMemo(() => {
-    const seen = new Set(), out = [];
-    sorted.forEach((r) => { const k = norm(r.material_name); if (!seen.has(k)) { seen.add(k); out.push(r); } });
-    return out;
-  }, [sorted]);
-
-  return (
-    <div className="space-y-4">
-      <PageHeader title="Material Price" icon={TrendingUp} isAdmin={isAdmin} createLabel="New Price" onCreate={() => setForm({ record: null })}
-        hint="Enter each material's price with the date it takes effect. Every new price is compared with the previous one (Increase / Decrease) and is used to work out the amount loss on Scrap / Wastage records."
-        extra={rows.length > 0 && (
-          <button data-testid="mp-report" onClick={() => setReport(true)} className="flex items-center gap-1.5 text-[12.5px] text-slate-600 border border-slate-200 hover:border-turkish rounded-md px-3 py-2 cursor-pointer"><FileText size={14} /> Price history report</button>
-        )} />
-
-      {current.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {current.map((r) => (
-            <div key={r.id} className="bg-white rounded-xl border border-slate-200 px-4 py-3.5">
-              <div className="text-[10.5px] uppercase tracking-wide text-slate-400 truncate" title={r.material_name}>{r.material_name}</div>
-              <div className="flex items-center justify-between gap-2 mt-1">
-                <div className="text-[20px] font-mono font-semibold text-slate-800">{priceText(r)}</div>
-                <ChangeBadge a={ann[r.id]} />
-              </div>
-              <div className="text-[11px] text-slate-400 mt-1">Effective {r.effective_date}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-[12.5px]" data-testid="mp-table">
-            <thead><tr className="bg-slate-50 text-left text-[11px] text-slate-400 uppercase tracking-wide">
-              <Th>Material</Th><Th>Effective From</Th><Th right>Price</Th><Th>Change vs previous</Th><Th>Note</Th><Th right>Actions</Th>
-            </tr></thead>
-            <tbody>
-              {rows.length === 0 && <Empty cols={6} loading={loading} text={"No material prices yet." + (isAdmin ? " Use New Price to add one." : "")} />}
-              {sorted.map((r) => (
-                <tr key={r.id} className="border-t border-slate-50 hover:bg-slate-50/60">
-                  <td className="px-3 py-2.5 text-slate-700">{r.material_name}</td>
-                  <td className="px-3 py-2.5 font-mono text-slate-500">{r.effective_date}</td>
-                  <td className="px-3 py-2.5 text-right font-mono text-slate-700 whitespace-nowrap">{priceText(r)}</td>
-                  <td className="px-3 py-2.5"><ChangeBadge a={ann[r.id]} /></td>
-                  <td className="px-3 py-2.5 text-slate-500">{r.note || "—"}</td>
-                  <td className="px-3 py-2.5">
-                    {isAdmin && (
-                      <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => setForm({ record: r })} aria-label={`Edit price of ${r.material_name}`} title="Edit" className="p-1.5 rounded hover:bg-slate-100 text-slate-500 cursor-pointer"><Pencil size={13} /></button>
-                        <button onClick={() => setDel(r)} aria-label={`Delete price of ${r.material_name}`} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-slate-500 hover:text-red-500 cursor-pointer"><Trash2 size={13} /></button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {form && (
-        <PriceForm initial={form.record} prices={rows} onClose={() => setForm(null)}
-          onSave={async (row) => { const res = await save(row); if (!res.error) { notify && notify(form.record ? "Price updated." : "Price saved."); setForm(null); } return res; }} />
-      )}
-      {report && (() => { const m = priceHistoryModel(rows); return <PreviewModal title="Material price history" html={modelHtml(m, logoUrl())} model={m} onClose={() => setReport(false)} notify={notify} />; })()}
-      {del && (
-        <ConfirmModal title="Delete price?" message={`Delete the ${del.material_name} price effective ${del.effective_date}? This cannot be undone.`} onCancel={() => setDel(null)}
-          onConfirm={async () => { const r = del; setDel(null); const res = await remove(r.id); notify && notify(res.error ? "Could not delete: " + res.error : "Price deleted."); }} />
       )}
     </div>
   );

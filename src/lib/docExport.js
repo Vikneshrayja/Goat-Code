@@ -16,9 +16,9 @@ import templateUrl from "../assets/Goat_Robotics.dotx?url";
 import letterheadUrl from "../assets/letterhead.png";
 import {
   RCA_SIGNERS, fmtDate, fmtDateTime, money, costSaving, costSavingPct,
-  weightText, downtimeText, hoursText, scrapTotals,
+  weightText, downtimeText, hoursText, scrapTotals, scrapItems, itemKg, componentsText, scrapMaterialGroups,
   esc, para as htmlPara, row as htmlRow, page as htmlPage,
-  priceText, annotatePrices, changeText, scrapGroups, costGroups, amountsText,
+  scrapGroups, costGroups, amountsText,
 } from "./docHtml";
 
 const TEAL = "378B8D";
@@ -98,37 +98,28 @@ export function costingSummaryModel(rows) {
 }
 
 export function scrapModel(r) {
+  const items = scrapItems(r);
+  const loss = {};
+  items.forEach((it) => { const c = it.currency || r.currency || "INR"; loss[c] = (loss[c] || 0) + (Number(it.amount) || 0); });
+  const kgTotal = items.reduce((a, it) => a + itemKg(it), 0);
   return {
     title: "Scrap / Wastage Report", subtitle: "Scrap & wastage record", ref: r.ref, file: r.ref || "Scrap",
     blocks: [
       { t: "kv", rows: [
         ["Date", fmtDate(r.scrap_date)],
         ["Project Name", val(r.project_name)],
-        ["Material Name", val(r.material_name)],
         ["Designer Name", val(r.designer_name)],
-        ["Weight", weightText(r)],
-        ["Amount Loss", money(r.amount_loss, r.currency)],
         ["Downtime Duration", downtimeText(r)],
       ] },
-    ],
-  };
-}
-
-export function scrapSummaryModel(rows) {
-  const t = scrapTotals(rows);
-  const foot = [{ label: "Total weight  |  total downtime", value: `${Number(t.kg.toFixed(3))} kg  |  ${hoursText(t.hrs)}` }]
-    .concat(Object.entries(t.loss).map(([c, v]) => ({ label: `Total amount loss (${c})`, value: money(v, c) })));
-  return {
-    title: "Scrap / Wastage Summary", subtitle: "All scrap & wastage records",
-    ref: `${rows.length} record${rows.length === 1 ? "" : "s"}`, file: "Scrap-summary",
-    blocks: [
+      { t: "h", text: "Components" },
       { t: "table",
-        cols: [{ label: "#", w: 0.05 }, { label: "Date", w: 0.13 }, { label: "Project / Material", w: 0.25 }, { label: "Designer", w: 0.14 }, { label: "Weight", w: 0.12, a: "r" }, { label: "Downtime", w: 0.14, a: "r" }, { label: "Amount loss", w: 0.17, a: "r" }],
-        rows: rows.length
-          ? rows.map((r, i) => [String(i + 1), fmtDate(r.scrap_date), `${r.project_name || ""}\n${r.material_name || ""}`, val(r.designer_name), weightText(r), downtimeText(r), money(r.amount_loss, r.currency)])
-          : [["", "", "No scrap records.", "", "", "", ""]],
-        foot: rows.length ? foot : [],
-      },
+        cols: [{ label: "#", w: 0.06 }, { label: "Component", w: 0.24 }, { label: "Material", w: 0.17 }, { label: "Weight", w: 0.15, a: "r" }, { label: "Cost / kg", w: 0.15, a: "r" }, { label: "Amount loss", w: 0.23, a: "r" }],
+        rows: items.map((it, i) => [String(i + 1), val(it.component), val(it.material_name), `${nf(it.weight)} ${it.weight_unit || "kg"}`,
+          Number(it.price_per_kg) > 0 ? money(it.price_per_kg, it.currency || r.currency) : "—", money(it.amount, it.currency || r.currency)]),
+        foot: [
+          { label: `Total weight: ${nf(kgTotal)} kg`, value: "" },
+          ...Object.entries(loss).map(([c, v]) => ({ label: "Total amount loss", value: money(v, c) })),
+        ] },
     ],
   };
 }
@@ -144,15 +135,12 @@ export function periodLabel(from, to) {
 
 export function scrapOverallModel(rows, period) {
   const t = scrapTotals(rows);
-  const grp = (title, keyFn, label) => {
-    const g = scrapGroups(rows, keyFn);
-    return [
-      { t: "h", text: title },
-      { t: "table",
-        cols: [{ label, w: 0.32 }, { label: "Records", w: 0.11, a: "r" }, { label: "Weight", w: 0.17, a: "r" }, { label: "Downtime", w: 0.17, a: "r" }, { label: "Amount loss", w: 0.23, a: "r" }],
-        rows: g.length ? g.map((x) => [x.name, String(x.count), `${nf(x.kg)} kg`, hoursText(x.hrs), amountsText(x.loss)]) : [["No records", "", "", "", ""]] },
-    ];
-  };
+  const grp = (title, label, g) => [
+    { t: "h", text: title },
+    { t: "table",
+      cols: [{ label, w: 0.32 }, { label: "Records", w: 0.11, a: "r" }, { label: "Weight", w: 0.17, a: "r" }, { label: "Downtime", w: 0.17, a: "r" }, { label: "Amount loss", w: 0.23, a: "r" }],
+      rows: g.length ? g.map((x) => [x.name, String(x.count), `${nf(x.kg)} kg`, x.hrs ? hoursText(x.hrs) : "—", amountsText(x.loss)]) : [["No records", "", "", "", ""]] },
+  ];
   return {
     title: "Scrap / Wastage — Overall Report", subtitle: "All scrap & wastage records", ref: period || "All dates", file: "Scrap-overall-report",
     blocks: [
@@ -163,14 +151,14 @@ export function scrapOverallModel(rows, period) {
         ["Total downtime", hoursText(t.hrs)],
         ["Total amount loss", amountsText(t.loss)],
       ] },
-      ...grp("By material", (r) => r.material_name, "Material"),
-      ...grp("By project", (r) => r.project_name, "Project"),
-      ...grp("By designer", (r) => r.designer_name, "Designer"),
+      ...grp("By material (component lines)", "Material", scrapMaterialGroups(rows)),
+      ...grp("By project", "Project", scrapGroups(rows, (r) => r.project_name)),
+      ...grp("By designer", "Designer", scrapGroups(rows, (r) => r.designer_name)),
       { t: "h", text: "All records" },
       { t: "table",
-        cols: [{ label: "#", w: 0.05 }, { label: "Date", w: 0.13 }, { label: "Project / Material", w: 0.25 }, { label: "Designer", w: 0.14 }, { label: "Weight", w: 0.12, a: "r" }, { label: "Downtime", w: 0.14, a: "r" }, { label: "Amount loss", w: 0.17, a: "r" }],
+        cols: [{ label: "#", w: 0.05 }, { label: "Date", w: 0.13 }, { label: "Project / Components", w: 0.25 }, { label: "Designer", w: 0.14 }, { label: "Weight", w: 0.12, a: "r" }, { label: "Downtime", w: 0.14, a: "r" }, { label: "Amount loss", w: 0.17, a: "r" }],
         rows: rows.length
-          ? rows.map((r, i) => [String(i + 1), fmtDate(r.scrap_date), `${r.project_name || ""}\n${r.material_name || ""}`, val(r.designer_name), weightText(r), downtimeText(r), money(r.amount_loss, r.currency)])
+          ? rows.map((r, i) => [String(i + 1), fmtDate(r.scrap_date), [r.project_name || "", componentsText(r)].filter(Boolean).join("\n"), val(r.designer_name), weightText(r), downtimeText(r), amountsText(scrapTotals([r]).loss)])
           : [["", "", "No scrap records.", "", "", "", ""]] },
     ],
   };
@@ -212,19 +200,6 @@ export function costingOverallModel(rows, period) {
         rows: rows.length
           ? rows.map((r, i) => [String(i + 1), val(r.item), `${r.previous_vendor || ""} -> ${r.new_vendor || ""}`, fmtDate(r.change_date), money(costSaving(r), r.currency)])
           : [["", "No vendor changes recorded.", "", "", ""]] },
-    ],
-  };
-}
-
-export function priceHistoryModel(prices) {
-  const ann = annotatePrices(prices);
-  const sorted = [...prices].sort((a, b) => String(a.material_name).toLowerCase().localeCompare(String(b.material_name).toLowerCase()) || String(b.effective_date).localeCompare(String(a.effective_date)));
-  return {
-    title: "Material Price History", subtitle: "Price changes over time", ref: `${prices.length} price entr${prices.length === 1 ? "y" : "ies"}`, file: "Material-price-history",
-    blocks: [
-      { t: "table",
-        cols: [{ label: "Material", w: 0.3 }, { label: "Effective date", w: 0.18 }, { label: "Price", w: 0.2, a: "r" }, { label: "Change", w: 0.32, a: "r" }],
-        rows: sorted.length ? sorted.map((r) => [val(r.material_name), fmtDate(r.effective_date), priceText(r), changeText(ann[r.id])]) : [["No prices recorded.", "", "", ""]] },
     ],
   };
 }
