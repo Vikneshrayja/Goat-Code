@@ -1,4 +1,4 @@
--- GOAT Robotics dashboard: Documents (RCA, Costing, Bottleneck).
+-- GOAT Robotics dashboard: Documents (RCA, Costing, Bottleneck, Scrap, Minutes of Meeting).
 -- Run ONCE in the Supabase SQL editor, AFTER migration.sql (it uses the
 -- is_approved() / is_admin() helper functions created there). Safe to re-run.
 
@@ -89,12 +89,27 @@ create table if not exists public.scrap_materials (
   updated_at timestamptz
 );
 
+-- ------------------------------------------------- Minutes of Meeting
+create table if not exists public.meeting_minutes (
+  id text primary key,
+  ref text,
+  project_name text,
+  meeting_at text,                  -- date & time of the meeting (local, e.g. 2026-10-20T10:30)
+  attendees jsonb not null,         -- 1-15: [{"name":"A","org":"Goat|External","company":"","sig":"data:image/png;base64,..."}]
+  points jsonb not null default '[]'::jsonb,   -- [{"point":"","summary":"","expected_date":"2026-10-30","owner":"A"}]
+  scope jsonb not null default '[]'::jsonb,    -- [{"party":"Goat|Client","item":"..."}]
+  created_at timestamptz not null default now(),
+  updated_at timestamptz,
+  constraint meeting_minutes_attendees_1_15
+    check (jsonb_typeof(attendees) = 'array' and jsonb_array_length(attendees) between 1 and 15)
+);
+
 -- --------------------------------------------------------------------- RLS
 -- Approved users can read; only administrators can create / edit / delete.
 do $$
 declare t text;
 begin
-  foreach t in array array['rca_reports','costing_records','bottleneck_studies','scrap_wastage','scrap_materials'] loop
+  foreach t in array array['rca_reports','costing_records','bottleneck_studies','scrap_wastage','scrap_materials','meeting_minutes'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('drop policy if exists %I on public.%I', t||'_read', t);
     execute format('drop policy if exists %I on public.%I', t||'_write', t);
@@ -110,6 +125,7 @@ do $$ begin
   begin alter publication supabase_realtime add table public.bottleneck_studies; exception when duplicate_object then null; end;
   begin alter publication supabase_realtime add table public.scrap_wastage;      exception when duplicate_object then null; end;
   begin alter publication supabase_realtime add table public.scrap_materials;   exception when duplicate_object then null; end;
+  begin alter publication supabase_realtime add table public.meeting_minutes;   exception when duplicate_object then null; end;
 end $$;
 
 notify pgrst, 'reload schema';

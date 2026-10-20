@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
-  Plus, X, Trash2, Pencil, Eye, Printer, Download, Boxes, TrendingUp, ArrowUp, ArrowDown, FileText, ClipboardCheck, Wallet, Gauge, CalendarDays,
+  Plus, X, Trash2, Pencil, Eye, Printer, Download, Boxes, TrendingUp, ArrowUp, ArrowDown, FileText, ClipboardCheck, Wallet, Gauge, CalendarDays, Users,
 } from "lucide-react";
 import logo from "../assets/logo.png";
 import { Field, SectionHeading, ConfirmModal, todayISO, durationDays } from "../shared";
@@ -11,7 +11,7 @@ import {
   norm, scrapItems, itemKg, componentsText,
   fmtDateTime, money, costSaving, costSavingPct, CURRENCIES,
 } from "../lib/docHtml";
-import { rcaModel, costingModel, bottleneckModel, scrapModel, scrapOverallModel, costingOverallModel, periodLabel, modelHtml, downloadWord, downloadPdf } from "../lib/docExport";
+import { momModel, MOM_MAX_ATTENDEES, rcaModel, costingModel, bottleneckModel, scrapModel, scrapOverallModel, costingOverallModel, periodLabel, modelHtml, downloadWord, downloadPdf } from "../lib/docExport";
 
 /* ============================ shared plumbing ============================ */
 
@@ -72,10 +72,10 @@ function useDocs(table, notify) {
   return { rows, loading, save, remove };
 }
 
-function Modal({ title, icon: Icon, onClose, children, footer, wide }) {
+function Modal({ title, icon: Icon, onClose, children, footer, wide, xl }) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div role="dialog" aria-label={title} className={`bg-white rounded-lg w-full ${wide ? "max-w-3xl" : "max-w-lg"} max-h-[92vh] overflow-y-auto shadow-2xl`}>
+      <div role="dialog" aria-label={title} className={`bg-white rounded-lg w-full ${xl ? "max-w-5xl" : wide ? "max-w-3xl" : "max-w-lg"} max-h-[92vh] overflow-y-auto shadow-2xl`}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
           <div className="text-[15px] font-display font-semibold text-slate-800 flex items-center gap-1.5">
             {Icon && <Icon size={16} className="text-turkish" />} {title}
@@ -1088,6 +1088,247 @@ export function ScrapPage({ isAdmin, projects, notify }) {
       {del && (
         <ConfirmModal title="Delete scrap record?" message={`Delete ${del.ref} (${del.project_name})? This cannot be undone.`} onCancel={() => setDel(null)}
           onConfirm={async () => { const r = del; setDel(null); const res = await remove(r.id); notify && notify(res.error ? "Could not delete: " + res.error : "Scrap record deleted."); }} />
+      )}
+    </div>
+  );
+}
+
+/* ========================== Minutes of Meeting =========================== */
+// One record = one meeting: attendees (1-15, Goat / External), project, date &
+// time, points with summary / expected date / task owner, scope of work
+// (Goat / Client) and a signature box for every attendee.
+
+const blankAttendee = (org = "Goat") => ({ _k: newKey(), name: "", org, company: "", sig: "" });
+const blankPoint = () => ({ _k: newKey(), point: "", summary: "", expected_date: "", owner: "" });
+const blankScope = (party = "Goat") => ({ _k: newKey(), party, item: "" });
+const stripKeys = (list) => list.map(({ _k, ...rest }) => rest);
+const updater = (setter) => (k, patch) => setter((l) => l.map((x) => (x._k === k ? { ...x, ...patch } : x)));
+const attendeeCounts = (r) => {
+  const named = (r.attendees || []).filter((a) => String(a.name || "").trim());
+  return { total: named.length, signed: named.filter((a) => a.sig).length, goat: named.filter((a) => a.org !== "External").length };
+};
+
+function MomForm({ initial, rows, projects, onClose, onSave }) {
+  const [f, setF] = useState(() => (initial ? { ...initial } : { project_name: "", meeting_at: localDT() }));
+  const [attendees, setAttendees] = useState(() => (initial && initial.attendees && initial.attendees.length ? initial.attendees.map((a) => ({ sig: "", company: "", ...a, _k: newKey() })) : [blankAttendee()]));
+  const [points, setPoints] = useState(() => (initial && initial.points && initial.points.length ? initial.points.map((p) => ({ ...p, _k: newKey() })) : [blankPoint()]));
+  const [scope, setScope] = useState(() => (initial ? (initial.scope || []).map((x) => ({ ...x, _k: newKey() })) : [blankScope()]));
+  const [errors, setErrors] = useState({});
+  const [busy, setBusy] = useState(false);
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const updA = updater(setAttendees), updP = updater(setPoints), updS = updater(setScope);
+
+  const named = attendees.filter((a) => a.name.trim());
+  const atMax = attendees.length >= MOM_MAX_ATTENDEES;
+
+  const submit = async () => {
+    const e = {};
+    if (!String(f.project_name || "").trim()) e.project_name = "Project name is required.";
+    if (!f.meeting_at) e.meeting_at = "Date and time are required.";
+    if (named.length < 1) e.attendees = "Add at least one attendee with a name.";
+    const pts = points.filter((p) => p.point.trim() || p.summary.trim());
+    if (pts.length < 1) e.points = "Add at least one point to cover.";
+    setErrors(e);
+    if (Object.keys(e).length) return;
+    setBusy(true);
+    const now = nowISO();
+    const row = {
+      ...f,
+      project_name: f.project_name.trim(),
+      attendees: stripKeys(named).map((a) => ({ ...a, name: a.name.trim(), company: (a.company || "").trim() })),
+      points: stripKeys(pts),
+      scope: stripKeys(scope.filter((x) => x.item.trim())),
+      id: f.id || newId("MOM"), ref: f.ref || nextRef("MOM", rows),
+      created_at: f.created_at || now, updated_at: now,
+    };
+    const res = await onSave(row);
+    setBusy(false);
+    if (res.error) setErrors({ _form: res.error });
+  };
+
+  const iconBtn = "p-2 rounded hover:bg-red-50 text-slate-400 hover:text-red-500 cursor-pointer";
+  const addBtn = "flex items-center gap-1 text-[12px] text-turkish-deep hover:underline cursor-pointer disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed";
+
+  return (
+    <Modal
+      title={initial ? `Edit ${initial.ref || "minutes"}` : "New Minutes of Meeting"} icon={Users} xl onClose={onClose}
+      footer={<>
+        <button onClick={onClose} className="text-[13px] px-3.5 py-1.5 rounded-md text-slate-500 hover:bg-slate-100 cursor-pointer">Cancel</button>
+        <button data-testid="doc-save" disabled={busy} onClick={submit} className="text-[13px] px-4 py-1.5 rounded-md bg-turkish hover:bg-turkish-deep text-white font-medium cursor-pointer disabled:opacity-60">Save Minutes</button>
+      </>}
+    >
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Field label="Project Name" error={errors.project_name}>
+          <input data-testid="mom-project" value={f.project_name || ""} list="mom-projects" onChange={(e) => set("project_name", e.target.value)} className="input" placeholder="Choose or type" />
+          <datalist id="mom-projects">{(projects || []).map((p) => <option key={p.id} value={p.name} />)}</datalist>
+        </Field>
+        <Field label="Date & Time" error={errors.meeting_at}>
+          <input data-testid="mom-datetime" type="datetime-local" value={f.meeting_at || ""} onChange={(e) => set("meeting_at", e.target.value)} className="input" />
+        </Field>
+      </div>
+
+      {/* ------------------------------ attendees ------------------------------ */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[11.5px] font-medium text-slate-500">Attendees <span className="text-slate-400">({attendees.length}/{MOM_MAX_ATTENDEES})</span></div>
+          <button type="button" data-testid="mom-add-attendee" disabled={atMax} onClick={() => setAttendees((l) => [...l, blankAttendee()])} className={addBtn}><Plus size={13} /> Add attendee</button>
+        </div>
+        <div className="hidden md:grid grid-cols-12 gap-2 px-1 mb-1 text-[10.5px] text-slate-400">
+          <div className="col-span-1">#</div><div className="col-span-4">Name</div><div className="col-span-2">Goat / External</div><div className="col-span-4">Company / Role (optional)</div>
+        </div>
+        <div className="space-y-2">
+          {attendees.map((a, i) => (
+            <div key={a._k} className="grid grid-cols-12 gap-2 items-center" data-testid={`mom-att-${i}`}>
+              <div className="hidden md:block col-span-1 text-[12px] font-mono text-slate-400 pl-1">{i + 1}</div>
+              <div className="col-span-12 md:col-span-4"><input value={a.name} onChange={(e) => updA(a._k, { name: e.target.value })} className="input" placeholder="Full name" aria-label={`Attendee ${i + 1} name`} /></div>
+              <div className="col-span-5 md:col-span-2">
+                <select value={a.org} onChange={(e) => updA(a._k, { org: e.target.value })} className="input" aria-label={`Attendee ${i + 1} Goat or External`}>
+                  <option value="Goat">Goat</option><option value="External">External</option>
+                </select>
+              </div>
+              <div className="col-span-6 md:col-span-4"><input value={a.company || ""} onChange={(e) => updA(a._k, { company: e.target.value })} className="input" placeholder={a.org === "External" ? "Company / designation" : "Designation"} aria-label={`Attendee ${i + 1} company or role`} /></div>
+              <div className="col-span-1 flex justify-end">
+                {attendees.length > 1 && <button type="button" onClick={() => setAttendees((l) => l.filter((x) => x._k !== a._k))} aria-label={`Remove attendee ${i + 1}`} title="Remove attendee" className={iconBtn}><Trash2 size={14} /></button>}
+              </div>
+            </div>
+          ))}
+        </div>
+        {atMax && <div className="text-[11px] text-slate-400 mt-1.5">Maximum of {MOM_MAX_ATTENDEES} attendees reached.</div>}
+        {errors.attendees && <div className="text-[11px] text-red-500 mt-1.5">{errors.attendees}</div>}
+      </div>
+
+      {/* ------------------------------- points -------------------------------- */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[11.5px] font-medium text-slate-500">Points to cover &amp; meeting summary</div>
+          <button type="button" data-testid="mom-add-point" onClick={() => setPoints((l) => [...l, blankPoint()])} className={addBtn}><Plus size={13} /> Add point</button>
+        </div>
+        <datalist id="mom-owners">{named.map((a) => <option key={a._k} value={a.name} />)}</datalist>
+        <div className="space-y-2.5">
+          {points.map((p, i) => (
+            <div key={p._k} className="border border-slate-200 rounded-md p-2.5" data-testid={`mom-pt-${i}`}>
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-start">
+                <div className="md:col-span-3">
+                  <label className="text-[10.5px] text-slate-400 block mb-0.5">Point {i + 1} to cover</label>
+                  <textarea rows={2} value={p.point} onChange={(e) => updP(p._k, { point: e.target.value })} className="input" placeholder="Topic / agenda item" />
+                </div>
+                <div className="md:col-span-4">
+                  <label className="text-[10.5px] text-slate-400 block mb-0.5">Meeting summary</label>
+                  <textarea rows={2} value={p.summary} onChange={(e) => updP(p._k, { summary: e.target.value })} className="input" placeholder="What was discussed / decided" />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="text-[10.5px] text-slate-400 block mb-0.5">Expected date</label>
+                  <input type="date" value={p.expected_date || ""} onChange={(e) => updP(p._k, { expected_date: e.target.value })} className="input" aria-label={`Point ${i + 1} expected date`} />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="text-[10.5px] text-slate-400 block mb-0.5">Task owner</label>
+                  <input value={p.owner || ""} list="mom-owners" onChange={(e) => updP(p._k, { owner: e.target.value })} className="input" placeholder="Pick or type" aria-label={`Point ${i + 1} task owner`} />
+                </div>
+                <div className="md:col-span-1 flex md:justify-end md:pt-5">
+                  {points.length > 1 && <button type="button" onClick={() => setPoints((l) => l.filter((x) => x._k !== p._k))} aria-label={`Remove point ${i + 1}`} title="Remove point" className={iconBtn}><Trash2 size={14} /></button>}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        {errors.points && <div className="text-[11px] text-red-500 mt-1.5">{errors.points}</div>}
+      </div>
+
+      {/* --------------------------- scope of work ----------------------------- */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[11.5px] font-medium text-slate-500">Scope of work</div>
+          <div className="flex items-center gap-3">
+            <button type="button" data-testid="mom-add-scope-goat" onClick={() => setScope((l) => [...l, blankScope("Goat")])} className={addBtn}><Plus size={13} /> Goat scope</button>
+            <button type="button" data-testid="mom-add-scope-client" onClick={() => setScope((l) => [...l, blankScope("Client")])} className={addBtn}><Plus size={13} /> Client scope</button>
+          </div>
+        </div>
+        {scope.length === 0 && <div className="text-[11.5px] text-slate-400">No scope items. Use “Goat scope” or “Client scope” to add one.</div>}
+        <div className="space-y-2">
+          {scope.map((x, i) => (
+            <div key={x._k} className="flex items-center gap-2" data-testid={`mom-scope-${i}`}>
+              <select value={x.party} onChange={(e) => updS(x._k, { party: e.target.value })} className="input w-28 shrink-0" aria-label={`Scope ${i + 1} responsibility`}>
+                <option value="Goat">Goat</option><option value="Client">Client</option>
+              </select>
+              <input value={x.item} onChange={(e) => updS(x._k, { item: e.target.value })} className="input flex-1 min-w-0" placeholder="Scope of work item" aria-label={`Scope ${i + 1} item`} />
+              <button type="button" onClick={() => setScope((l) => l.filter((y) => y._k !== x._k))} aria-label={`Delete scope item ${i + 1}`} title="Delete scope item" className={iconBtn}><Trash2 size={14} /></button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ----------------------------- signatures ------------------------------ */}
+      <div>
+        <div className="text-[11.5px] font-medium text-slate-500 mb-2">Attendee signatures</div>
+        {named.length === 0
+          ? <div className="text-[11.5px] text-slate-400">Enter attendee names above — a signature box appears here for each one.</div>
+          : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {named.map((a) => (
+                <div key={a._k} className="border border-slate-200 rounded-md p-2.5 space-y-2">
+                  <div>
+                    <div className="text-[12px] font-medium text-slate-700 truncate" title={a.name}>{a.name}</div>
+                    <div className="text-[10.5px] text-slate-400 truncate">{a.org}{a.company ? ` · ${a.company}` : ""}</div>
+                  </div>
+                  <SignaturePad label={a.name} value={a.sig} onChange={(d) => updA(a._k, { sig: d })} />
+                </div>
+              ))}
+            </div>
+          )}
+      </div>
+      {errors._form && <div className="text-[12px] text-red-500">{errors._form}</div>}
+    </Modal>
+  );
+}
+
+export function MomPage({ isAdmin, projects, notify }) {
+  const { rows, loading, save, remove } = useDocs("meeting_minutes", notify);
+  const [form, setForm] = useState(null);
+  const [view, setView] = useState(null);
+  const [del, setDel] = useState(null);
+
+  return (
+    <div className="space-y-4">
+      <PageHeader title="Minutes of Meeting" icon={Users} isAdmin={isAdmin} createLabel="New Minutes" onCreate={() => setForm({ record: null })}
+        hint="Record who attended (Goat / External), the points covered with their summary, expected date and task owner, the scope of work, and collect each attendee's signature. Open any record to download it as Word or PDF, or print it." />
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-[12.5px]" data-testid="mom-table">
+            <thead><tr className="bg-slate-50 text-left text-[11px] text-slate-400 uppercase tracking-wide">
+              <Th>Ref</Th><Th>Date &amp; Time</Th><Th>Project</Th><Th>Attendees</Th><Th>Points</Th><Th>Signed</Th><Th right>Actions</Th>
+            </tr></thead>
+            <tbody>
+              {rows.length === 0 && <Empty cols={7} loading={loading} text={"No meeting minutes yet." + (isAdmin ? " Use New Minutes to add one." : "")} />}
+              {rows.map((r) => {
+                const c = attendeeCounts(r);
+                const done = c.total > 0 && c.signed === c.total;
+                return (
+                  <tr key={r.id} className="border-t border-slate-50 hover:bg-slate-50/60">
+                    <td className="px-3 py-2.5 font-mono text-slate-500">{r.ref}</td>
+                    <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{fmtDateTime(r.meeting_at)}</td>
+                    <td className="px-3 py-2.5 text-slate-700">{r.project_name}</td>
+                    <td className="px-3 py-2.5 text-slate-500 whitespace-nowrap">{c.total} <span className="text-slate-400">({c.goat} Goat, {c.total - c.goat} Ext)</span></td>
+                    <td className="px-3 py-2.5 text-slate-500">{(r.points || []).length}</td>
+                    <td className="px-3 py-2.5"><span className={`text-[11px] px-2 py-0.5 rounded-full ${done ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{c.signed}/{c.total}</span></td>
+                    <td className="px-3 py-2.5"><RowActions isAdmin={isAdmin} label={r.ref} notify={notify} model={momModel(r)} onView={() => setView(r)} onEdit={() => setForm({ record: r })} onDelete={() => setDel(r)} /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {form && (
+        <MomForm
+          initial={form.record} rows={rows} projects={projects} onClose={() => setForm(null)}
+          onSave={async (row) => { const res = await save(row); if (!res.error) { notify && notify(form.record ? "Minutes updated." : "Minutes saved."); setForm(null); } return res; }}
+        />
+      )}
+      {view && (() => { const m = momModel(view); return <PreviewModal title={`Minutes ${view.ref || ""}`} html={modelHtml(m, logoUrl())} model={m} onClose={() => setView(null)} notify={notify} />; })()}
+      {del && (
+        <ConfirmModal title="Delete minutes?" message={`Delete ${del.ref} (${del.project_name})? This cannot be undone.`} onCancel={() => setDel(null)}
+          onConfirm={async () => { const r = del; setDel(null); const res = await remove(r.id); notify && notify(res.error ? "Could not delete: " + res.error : "Minutes deleted."); }} />
       )}
     </div>
   );

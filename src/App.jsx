@@ -27,7 +27,7 @@ import {
 } from "./lib/db";
 import { TaskFeedsPage, EmployeeAllocationPage } from "./pages/Manufacturing";
 import { AuthorizedUsersPage, ApprovalPage } from "./pages/Access";
-import { RcaPage, CostingPage, BottleneckPage, ScrapPage } from "./pages/Documents";
+import { RcaPage, CostingPage, BottleneckPage, ScrapPage, MomPage } from "./pages/Documents";
 
 /* ----------------------------- constants ----------------------------- */
 
@@ -100,6 +100,7 @@ const NAV_TREE = [
       { key: "documents.costing", label: "Costing", icon: Wallet },
       { key: "documents.bottleneck", label: "Bottleneck", icon: Gauge },
       { key: "documents.scrap", label: "Scrap / Wastage", icon: Boxes },
+      { key: "documents.mom", label: "Minutes of Meeting", icon: Users },
     ],
   },
   {
@@ -963,6 +964,9 @@ function PageRouter(props) {
   }
   if (page === "documents.scrap") {
     return <ScrapPage isAdmin={isAdmin} projects={projects} notify={notify} />;
+  }
+  if (page === "documents.mom") {
+    return <MomPage isAdmin={isAdmin} projects={projects} notify={notify} />;
   }
   if (page === "documents.bottleneck") {
     return <BottleneckPage isAdmin={isAdmin} projects={projects} notify={notify} />;

@@ -124,6 +124,52 @@ export function scrapModel(r) {
   };
 }
 
+
+/* ------------------------- Minutes of Meeting ------------------------- */
+// attendees: [{ name, org: "Goat" | "External", company, sig }]
+// points:    [{ point, summary, expected_date, owner }]
+// scope:     [{ party: "Goat" | "Client", item }]
+export const MOM_MAX_ATTENDEES = 15;
+
+export function momModel(r) {
+  const attendees = (r.attendees || []).filter((a) => String(a.name || "").trim());
+  const points = (r.points || []).filter((p) => String(p.point || "").trim() || String(p.summary || "").trim());
+  const scope = (r.scope || []).filter((x) => String(x.item || "").trim());
+  const goat = attendees.filter((a) => a.org !== "External").length;
+  return {
+    title: "Minutes of Meeting", subtitle: "Meeting record", ref: r.ref, file: r.ref || "Minutes-of-Meeting",
+    blocks: [
+      { t: "kv", rows: [
+        ["Project Name", val(r.project_name)],
+        ["Date & Time", fmtDateTime(r.meeting_at)],
+        ["Attendees", `${attendees.length} (${goat} Goat, ${attendees.length - goat} External)`],
+      ] },
+      { t: "h", text: "Attendees" },
+      { t: "table",
+        cols: [{ label: "#", w: 0.07 }, { label: "Name", w: 0.35 }, { label: "Goat / External", w: 0.18 }, { label: "Company / Role", w: 0.40 }],
+        rows: attendees.length ? attendees.map((a, i) => [String(i + 1), val(a.name), a.org === "External" ? "External" : "Goat", val(a.company)]) : [["", "—", "", ""]],
+      },
+      { t: "h", text: "Points to cover & meeting summary" },
+      { t: "table",
+        cols: [{ label: "#", w: 0.06 }, { label: "Point to cover", w: 0.26 }, { label: "Meeting summary", w: 0.35 }, { label: "Expected date", w: 0.15 }, { label: "Task owner", w: 0.18 }],
+        rows: points.length ? points.map((p, i) => [String(i + 1), val(p.point), val(p.summary), p.expected_date ? fmtDate(p.expected_date) : "—", val(p.owner)]) : [["", "—", "—", "—", "—"]],
+      },
+      { t: "h", text: "Scope of work" },
+      { t: "table",
+        cols: [{ label: "#", w: 0.07 }, { label: "Scope of work", w: 0.71 }, { label: "Responsibility", w: 0.22 }],
+        rows: scope.length ? scope.map((x, i) => [String(i + 1), val(x.item), x.party === "Client" ? "Client" : "Goat"]) : [["", "—", "—"]],
+      },
+      { t: "h", text: "Attendee signatures" },
+      attendees.length
+        ? { t: "sigs", per: 3, items: attendees.map((a) => ({
+            role: a.name, name: [a.org === "External" ? "External" : "Goat", a.company].filter((v) => String(v || "").trim()).join(" · "),
+            img: safePng(a.sig),
+          })) }
+        : { t: "box", text: "—" },
+    ],
+  };
+}
+
 /* ---------------------------- overall reports ---------------------------- */
 const nf = (v) => Number(Number(v).toFixed(3)).toLocaleString("en-IN");
 
@@ -216,6 +262,17 @@ export function modelHtml(model, logoUrl) {
       return `<table><tr>${b.cols.map((c) => `<th${cls(c)}>${esc(c.label)}</th>`).join("")}</tr>` +
         b.rows.map((r) => `<tr>${r.map((v, i) => `<td${cls(b.cols[i])}>${htmlPara(v)}</td>`).join("")}</tr>`).join("") +
         (b.foot || []).map((f) => `<tr class="total"><td colspan="${b.cols.length - 1}">${esc(f.label)}</td><td class="num">${esc(f.value)}</td></tr>`).join("") + `</table>`;
+    }
+    if (b.t === "sigs") {
+      const per = b.per || b.items.length;
+      const box = (s) => `<div class="sig"><div class="pad">${s.img ? `<img src="${esc(s.img)}" alt="signature">` : ""}</div><div class="role">${esc(s.role)}</div><div class="nm">${esc(s.name || "")}</div></div>`;
+      let out = "";
+      for (let a = 0; a < b.items.length; a += per) {
+        const chunk = b.items.slice(a, a + per);
+        while (chunk.length < per) chunk.push(null);
+        out += `<div class="sigs" style="margin-top:${a ? 10 : 8}px">${chunk.map((s) => (s ? box(s) : '<div class="sig" style="visibility:hidden"></div>')).join("")}</div>`;
+      }
+      return out;
     }
     return "";
   }).join("");
@@ -318,9 +375,10 @@ function docxBody(model, images) {
       });
       out += tbl(grid, rows);
     } else if (b.t === "sigs") {
-      const n = b.items.length, cw = Math.floor(W / n);
-      const grid = b.items.map((_, i) => (i === n - 1 ? W - cw * (n - 1) : cw));
-      out += tbl(grid, row(b.items.map((s, i) => {
+      const per = b.per || b.items.length;
+      const cw = Math.floor(W / per);
+      const grid = Array.from({ length: per }, (_, i) => (i === per - 1 ? W - cw * (per - 1) : cw));
+      const sigCell = (s, i) => {
         let pic = para("", { before: 560, after: 0, border: 6, borderColor: "333333" });
         if (s.img) {
           const id = images.length + 1;
@@ -329,7 +387,13 @@ function docxBody(model, images) {
           pic = `<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="2" w:color="333333"/></w:pBdr><w:spacing w:before="120" w:after="0"/><w:jc w:val="center"/></w:pPr><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="${9000 + id}" name="Signature ${id}"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${9000 + id}" name="sig${id}.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rIdSig${id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
         }
         return cell(grid[i], pic + para(s.role, { b: true, sz: 19, jc: "center", before: 60, after: 0 }) + para(s.name || " ", { sz: 19, jc: "center", after: 0 }) + (s.signed ? para(s.signed, { sz: 17, color: "666666", jc: "center", after: 0 }) : ""));
-      }).join("")));
+      };
+      for (let a0 = 0; a0 < b.items.length; a0 += per) {
+        const chunk = b.items.slice(a0, a0 + per);
+        // short last row: pad with empty cells so every box keeps the same width
+        const cells = grid.map((_, i) => (chunk[i] ? sigCell(chunk[i], i) : cell(grid[i], para(" ", { after: 0 }))));
+        out += tbl(grid, row(cells.join(""))) + (a0 + per < b.items.length ? spacer() : "");
+      }
     }
     if (b.t !== "h") out += spacer();
   });
@@ -513,24 +577,27 @@ async function buildPdf(model) {
         drawRow([{ text: f.label, w: lw, f: bold, fill: green }, { text: f.value, w: ws[ws.length - 1], f: bold, fill: green, a: "r" }]);
       });
     } else if (b.t === "sigs") {
-      const n = b.items.length, gap = 10, cw = (CW - gap * (n - 1)) / n, h = 112;
-      need(h + 4);
-      for (let i = 0; i < n; i++) {
-        const s = b.items[i], x0 = ML + i * (cw + gap);
-        rect(x0, y, cw, h);
-        if (s.img) {
-          try {
-            const im = await pdf.embedPng(s.img);
-            const sc = Math.min((cw - 24) / im.width, 50 / im.height);
-            page.drawImage(im, { x: x0 + (cw - im.width * sc) / 2, y: y - 8 - im.height * sc, width: im.width * sc, height: im.height * sc });
-          } catch (e) { /* unreadable signature image: leave the box blank */ }
+      const per = b.per || b.items.length, gap = 10, cw = (CW - gap * (per - 1)) / per, h = 112;
+      for (let a0 = 0; a0 < b.items.length; a0 += per) {
+        need(h + 4);
+        const chunk = b.items.slice(a0, a0 + per);
+        for (let i = 0; i < chunk.length; i++) {
+          const s = chunk[i], x0 = ML + i * (cw + gap);
+          rect(x0, y, cw, h);
+          if (s.img) {
+            try {
+              const im = await pdf.embedPng(s.img);
+              const sc = Math.min((cw - 24) / im.width, 50 / im.height);
+              page.drawImage(im, { x: x0 + (cw - im.width * sc) / 2, y: y - 8 - im.height * sc, width: im.width * sc, height: im.height * sc });
+            } catch (e) { /* unreadable signature image: leave the box blank */ }
+          }
+          page.drawLine({ start: { x: x0 + 10, y: y - 64 }, end: { x: x0 + cw - 10, y: y - 64 }, thickness: 0.8, color: ink });
+          drawLines([clean(s.role)], bold, 9.5, x0, y - 68, ink, "c", cw);
+          drawLines([clean(s.name || "")], font, 9.5, x0, y - 82, ink, "c", cw);
+          if (s.signed) drawLines([clean(s.signed)], font, 8.5, x0, y - 95, grey, "c", cw);
         }
-        page.drawLine({ start: { x: x0 + 10, y: y - 64 }, end: { x: x0 + cw - 10, y: y - 64 }, thickness: 0.8, color: ink });
-        drawLines([clean(s.role)], bold, 9.5, x0, y - 68, ink, "c", cw);
-        drawLines([clean(s.name || "")], font, 9.5, x0, y - 82, ink, "c", cw);
-        if (s.signed) drawLines([clean(s.signed)], font, 8.5, x0, y - 95, grey, "c", cw);
+        y -= h + (a0 + per < b.items.length ? 8 : 0);
       }
-      y -= h;
     }
     y -= 4;
   }
