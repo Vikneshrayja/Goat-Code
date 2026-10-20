@@ -8,6 +8,7 @@ create table if not exists public.rca_reports (
   ref text,
   incident_at text,                 -- date & time of the incident
   reported_by text,
+  witness_name text,
   location text,
   description text,
   explanation text,
@@ -21,6 +22,9 @@ create table if not exists public.rca_reports (
   created_at timestamptz not null default now(),
   updated_at timestamptz
 );
+
+-- Existing databases: add the Witness Name column (safe to re-run).
+alter table public.rca_reports add column if not exists witness_name text;
 
 -- ---------------------------------------------------- Costing (vendor change)
 create table if not exists public.costing_records (
@@ -52,12 +56,44 @@ create table if not exists public.bottleneck_studies (
   updated_at timestamptz
 );
 
+-- ------------------------------------------------------- Scrap / Wastage
+create table if not exists public.scrap_wastage (
+  id text primary key,
+  ref text,
+  scrap_date text,
+  project_name text,
+  material_name text,
+  designer_name text,
+  weight numeric,                   -- scrap weight, in weight_unit
+  weight_unit text default 'kg',    -- kg | g | ton
+  amount_loss numeric,
+  currency text default 'INR',
+  downtime_value numeric,           -- downtime, in downtime_unit
+  downtime_unit text default 'Hours', -- Minutes | Hours | Days
+  created_at timestamptz not null default now(),
+  updated_at timestamptz
+);
+
+-- ------------------------------------------------------- Material prices
+-- A material's price over time; each entry applies from effective_date.
+create table if not exists public.material_prices (
+  id text primary key,
+  material_name text,
+  price numeric,
+  price_unit text default 'kg',     -- kg | g | ton
+  currency text default 'INR',
+  effective_date text,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz
+);
+
 -- --------------------------------------------------------------------- RLS
 -- Approved users can read; only administrators can create / edit / delete.
 do $$
 declare t text;
 begin
-  foreach t in array array['rca_reports','costing_records','bottleneck_studies'] loop
+  foreach t in array array['rca_reports','costing_records','bottleneck_studies','scrap_wastage','material_prices'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('drop policy if exists %I on public.%I', t||'_read', t);
     execute format('drop policy if exists %I on public.%I', t||'_write', t);
@@ -71,4 +107,8 @@ do $$ begin
   begin alter publication supabase_realtime add table public.rca_reports;        exception when duplicate_object then null; end;
   begin alter publication supabase_realtime add table public.costing_records;    exception when duplicate_object then null; end;
   begin alter publication supabase_realtime add table public.bottleneck_studies; exception when duplicate_object then null; end;
+  begin alter publication supabase_realtime add table public.scrap_wastage;      exception when duplicate_object then null; end;
+  begin alter publication supabase_realtime add table public.material_prices;    exception when duplicate_object then null; end;
 end $$;
+
+notify pgrst, 'reload schema';

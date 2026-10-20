@@ -16,6 +16,9 @@ import templateUrl from "../assets/Goat_Robotics.dotx?url";
 import letterheadUrl from "../assets/letterhead.png";
 import {
   RCA_SIGNERS, fmtDate, fmtDateTime, money, costSaving, costSavingPct,
+  weightText, downtimeText, hoursText, scrapTotals,
+  esc, para as htmlPara, row as htmlRow, page as htmlPage,
+  priceText, annotatePrices, changeText, scrapGroups, costGroups, amountsText,
 } from "./docHtml";
 
 const TEAL = "378B8D";
@@ -31,9 +34,10 @@ export function rcaModel(r) {
       { t: "kv", rows: [
         ["Date & Time of Incident", fmtDateTime(r.incident_at)],
         ["Reported Person", val(r.reported_by)],
+        ["Witness Name", val(r.witness_name)],
         ["Location", val(r.location)],
-        ["Fix Date", fmtDate(r.fix_date)],
-        ["Expected Date", fmtDate(r.expected_date)],
+        ["Temp Fix Date", fmtDate(r.fix_date)],
+        ["Expected Solution Date", fmtDate(r.expected_date)],
       ] },
       { t: "h", text: "Description" }, { t: "box", text: val(r.description) },
       { t: "h", text: "Explanation" }, { t: "box", text: val(r.explanation) },
@@ -42,7 +46,6 @@ export function rcaModel(r) {
       { t: "h", text: "Approvals" },
       { t: "sigs", items: RCA_SIGNERS.map((s) => ({
         role: s.role, name: r[`${s.key}_name`] || "",
-        signed: r[`${s.key}_signed_at`] ? "Signed " + fmtDateTime(r[`${s.key}_signed_at`]) : "Not signed",
         img: safePng(r[`${s.key}_sig`]),
       })) },
     ],
@@ -92,6 +95,156 @@ export function costingSummaryModel(rows) {
       },
     ],
   };
+}
+
+export function scrapModel(r) {
+  return {
+    title: "Scrap / Wastage Report", subtitle: "Scrap & wastage record", ref: r.ref, file: r.ref || "Scrap",
+    blocks: [
+      { t: "kv", rows: [
+        ["Date", fmtDate(r.scrap_date)],
+        ["Project Name", val(r.project_name)],
+        ["Material Name", val(r.material_name)],
+        ["Designer Name", val(r.designer_name)],
+        ["Weight", weightText(r)],
+        ["Amount Loss", money(r.amount_loss, r.currency)],
+        ["Downtime Duration", downtimeText(r)],
+      ] },
+    ],
+  };
+}
+
+export function scrapSummaryModel(rows) {
+  const t = scrapTotals(rows);
+  const foot = [{ label: "Total weight  |  total downtime", value: `${Number(t.kg.toFixed(3))} kg  |  ${hoursText(t.hrs)}` }]
+    .concat(Object.entries(t.loss).map(([c, v]) => ({ label: `Total amount loss (${c})`, value: money(v, c) })));
+  return {
+    title: "Scrap / Wastage Summary", subtitle: "All scrap & wastage records",
+    ref: `${rows.length} record${rows.length === 1 ? "" : "s"}`, file: "Scrap-summary",
+    blocks: [
+      { t: "table",
+        cols: [{ label: "#", w: 0.05 }, { label: "Date", w: 0.13 }, { label: "Project / Material", w: 0.25 }, { label: "Designer", w: 0.14 }, { label: "Weight", w: 0.12, a: "r" }, { label: "Downtime", w: 0.14, a: "r" }, { label: "Amount loss", w: 0.17, a: "r" }],
+        rows: rows.length
+          ? rows.map((r, i) => [String(i + 1), fmtDate(r.scrap_date), `${r.project_name || ""}\n${r.material_name || ""}`, val(r.designer_name), weightText(r), downtimeText(r), money(r.amount_loss, r.currency)])
+          : [["", "", "No scrap records.", "", "", "", ""]],
+        foot: rows.length ? foot : [],
+      },
+    ],
+  };
+}
+
+/* ---------------------------- overall reports ---------------------------- */
+const nf = (v) => Number(Number(v).toFixed(3)).toLocaleString("en-IN");
+
+export function periodLabel(from, to) {
+  if (!from && !to) return "All dates";
+  if (from && to) return `${fmtDate(from)} to ${fmtDate(to)}`;
+  return from ? `From ${fmtDate(from)}` : `Up to ${fmtDate(to)}`;
+}
+
+export function scrapOverallModel(rows, period) {
+  const t = scrapTotals(rows);
+  const grp = (title, keyFn, label) => {
+    const g = scrapGroups(rows, keyFn);
+    return [
+      { t: "h", text: title },
+      { t: "table",
+        cols: [{ label, w: 0.32 }, { label: "Records", w: 0.11, a: "r" }, { label: "Weight", w: 0.17, a: "r" }, { label: "Downtime", w: 0.17, a: "r" }, { label: "Amount loss", w: 0.23, a: "r" }],
+        rows: g.length ? g.map((x) => [x.name, String(x.count), `${nf(x.kg)} kg`, hoursText(x.hrs), amountsText(x.loss)]) : [["No records", "", "", "", ""]] },
+    ];
+  };
+  return {
+    title: "Scrap / Wastage — Overall Report", subtitle: "All scrap & wastage records", ref: period || "All dates", file: "Scrap-overall-report",
+    blocks: [
+      { t: "kv", rows: [
+        ["Period", period || "All dates"],
+        ["Records", String(rows.length)],
+        ["Total scrap weight", `${nf(t.kg)} kg`],
+        ["Total downtime", hoursText(t.hrs)],
+        ["Total amount loss", amountsText(t.loss)],
+      ] },
+      ...grp("By material", (r) => r.material_name, "Material"),
+      ...grp("By project", (r) => r.project_name, "Project"),
+      ...grp("By designer", (r) => r.designer_name, "Designer"),
+      { t: "h", text: "All records" },
+      { t: "table",
+        cols: [{ label: "#", w: 0.05 }, { label: "Date", w: 0.13 }, { label: "Project / Material", w: 0.25 }, { label: "Designer", w: 0.14 }, { label: "Weight", w: 0.12, a: "r" }, { label: "Downtime", w: 0.14, a: "r" }, { label: "Amount loss", w: 0.17, a: "r" }],
+        rows: rows.length
+          ? rows.map((r, i) => [String(i + 1), fmtDate(r.scrap_date), `${r.project_name || ""}\n${r.material_name || ""}`, val(r.designer_name), weightText(r), downtimeText(r), money(r.amount_loss, r.currency)])
+          : [["", "", "No scrap records.", "", "", "", ""]] },
+    ],
+  };
+}
+
+export function costingOverallModel(rows, period) {
+  const saved = {}, before = {}, after = {};
+  rows.forEach((r) => {
+    const c = r.currency || "INR", q = Number(r.quantity) || 0;
+    saved[c] = (saved[c] || 0) + costSaving(r);
+    before[c] = (before[c] || 0) + Number(r.previous_cost) * q;
+    after[c] = (after[c] || 0) + Number(r.new_cost) * q;
+  });
+  const grp = (title, keyFn, label) => {
+    const g = costGroups(rows, keyFn);
+    return [
+      { t: "h", text: title },
+      { t: "table",
+        cols: [{ label, w: 0.5 }, { label: "Changes", w: 0.18, a: "r" }, { label: "Amount saved", w: 0.32, a: "r" }],
+        rows: g.length ? g.map((x) => [x.name, String(x.count), amountsText(x.saved)]) : [["No records", "", ""]] },
+    ];
+  };
+  return {
+    title: "Costing — Overall Cost Saving Report", subtitle: "All recorded vendor changes", ref: period || "All dates", file: "Costing-overall-report",
+    blocks: [
+      { t: "kv", rows: [
+        ["Period", period || "All dates"],
+        ["Vendor changes", String(rows.length)],
+        ["Cost with previous vendors", amountsText(before)],
+        ["Cost with new vendors", amountsText(after)],
+        ["Total amount saved", amountsText(saved)],
+      ] },
+      ...grp("By project", (r) => r.project_name, "Project"),
+      ...grp("By item / part", (r) => r.item, "Item / Part"),
+      ...grp("By new vendor", (r) => r.new_vendor, "New vendor"),
+      { t: "h", text: "All vendor changes" },
+      { t: "table",
+        cols: [{ label: "#", w: 0.05 }, { label: "Item / Part", w: 0.27 }, { label: "Vendor change", w: 0.31 }, { label: "Date", w: 0.14 }, { label: "Saved", w: 0.23, a: "r" }],
+        rows: rows.length
+          ? rows.map((r, i) => [String(i + 1), val(r.item), `${r.previous_vendor || ""} -> ${r.new_vendor || ""}`, fmtDate(r.change_date), money(costSaving(r), r.currency)])
+          : [["", "No vendor changes recorded.", "", "", ""]] },
+    ],
+  };
+}
+
+export function priceHistoryModel(prices) {
+  const ann = annotatePrices(prices);
+  const sorted = [...prices].sort((a, b) => String(a.material_name).toLowerCase().localeCompare(String(b.material_name).toLowerCase()) || String(b.effective_date).localeCompare(String(a.effective_date)));
+  return {
+    title: "Material Price History", subtitle: "Price changes over time", ref: `${prices.length} price entr${prices.length === 1 ? "y" : "ies"}`, file: "Material-price-history",
+    blocks: [
+      { t: "table",
+        cols: [{ label: "Material", w: 0.3 }, { label: "Effective date", w: 0.18 }, { label: "Price", w: 0.2, a: "r" }, { label: "Change", w: 0.32, a: "r" }],
+        rows: sorted.length ? sorted.map((r) => [val(r.material_name), fmtDate(r.effective_date), priceText(r), changeText(ann[r.id])]) : [["No prices recorded.", "", "", ""]] },
+    ],
+  };
+}
+
+// Same models drawn as HTML (used for the on-screen preview and Print).
+export function modelHtml(model, logoUrl) {
+  const body = model.blocks.map((b) => {
+    if (b.t === "h") return `<h2>${esc(b.text)}</h2>`;
+    if (b.t === "kv") return `<table>${b.rows.map(([k, v]) => htmlRow(k, htmlPara(v))).join("")}</table>`;
+    if (b.t === "box") return `<div class="box">${htmlPara(b.text)}</div>`;
+    if (b.t === "list") return `<ol>${b.items.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>`;
+    if (b.t === "table") {
+      const cls = (c) => (c.a === "r" ? ' class="num"' : "");
+      return `<table><tr>${b.cols.map((c) => `<th${cls(c)}>${esc(c.label)}</th>`).join("")}</tr>` +
+        b.rows.map((r) => `<tr>${r.map((v, i) => `<td${cls(b.cols[i])}>${htmlPara(v)}</td>`).join("")}</tr>`).join("") +
+        (b.foot || []).map((f) => `<tr class="total"><td colspan="${b.cols.length - 1}">${esc(f.label)}</td><td class="num">${esc(f.value)}</td></tr>`).join("") + `</table>`;
+    }
+    return "";
+  }).join("");
+  return htmlPage(model.title, logoUrl, model.ref, model.subtitle, body);
 }
 
 export function bottleneckModel(r) {
@@ -200,7 +353,7 @@ function docxBody(model, images) {
           const cx = 1371600, cy = Math.round((cx * 110) / 360);
           pic = `<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="2" w:color="333333"/></w:pBdr><w:spacing w:before="120" w:after="0"/><w:jc w:val="center"/></w:pPr><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="${9000 + id}" name="Signature ${id}"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${9000 + id}" name="sig${id}.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rIdSig${id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
         }
-        return cell(grid[i], pic + para(s.role, { b: true, sz: 19, jc: "center", before: 60, after: 0 }) + para(s.name || " ", { sz: 19, jc: "center", after: 0 }) + para(s.signed || "", { sz: 17, color: "666666", jc: "center", after: 0 }));
+        return cell(grid[i], pic + para(s.role, { b: true, sz: 19, jc: "center", before: 60, after: 0 }) + para(s.name || " ", { sz: 19, jc: "center", after: 0 }) + (s.signed ? para(s.signed, { sz: 17, color: "666666", jc: "center", after: 0 }) : ""));
       }).join("")));
     }
     if (b.t !== "h") out += spacer();
@@ -400,7 +553,7 @@ async function buildPdf(model) {
         page.drawLine({ start: { x: x0 + 10, y: y - 64 }, end: { x: x0 + cw - 10, y: y - 64 }, thickness: 0.8, color: ink });
         drawLines([clean(s.role)], bold, 9.5, x0, y - 68, ink, "c", cw);
         drawLines([clean(s.name || "")], font, 9.5, x0, y - 82, ink, "c", cw);
-        drawLines([clean(s.signed || "")], font, 8.5, x0, y - 95, grey, "c", cw);
+        if (s.signed) drawLines([clean(s.signed)], font, 8.5, x0, y - 95, grey, "c", cw);
       }
       y -= h;
     }

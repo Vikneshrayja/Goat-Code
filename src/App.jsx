@@ -8,7 +8,7 @@ import {
   Download, Upload, FileSpreadsheet, Flag, Lock, Mail, Eye, EyeOff, LogOut,
   ShieldCheck, LogIn, GitBranch, SlidersHorizontal, Users, UserPlus, KeyRound,
   ToggleLeft, PanelsTopLeft, Phone, Info, ChevronUp, GripVertical, Sparkles,
-  Save, Bookmark, Boxes, Send, FileText, ClipboardCheck, Wallet, Gauge,
+  Save, Bookmark, Boxes, TrendingUp, Send, FileText, ClipboardCheck, Wallet, Gauge,
 } from "lucide-react";
 import logo from "./assets/logo.png";
 import loginSplash from "./assets/login-splash.png";
@@ -27,7 +27,7 @@ import {
 } from "./lib/db";
 import { TaskFeedsPage, EmployeeAllocationPage } from "./pages/Manufacturing";
 import { AuthorizedUsersPage, ApprovalPage } from "./pages/Access";
-import { RcaPage, CostingPage, BottleneckPage } from "./pages/Documents";
+import { RcaPage, CostingPage, BottleneckPage, ScrapPage, MaterialPricePage } from "./pages/Documents";
 
 /* ----------------------------- constants ----------------------------- */
 
@@ -99,6 +99,8 @@ const NAV_TREE = [
       { key: "documents.rca", label: "RCA", icon: ClipboardCheck },
       { key: "documents.costing", label: "Costing", icon: Wallet },
       { key: "documents.bottleneck", label: "Bottleneck", icon: Gauge },
+      { key: "documents.scrap", label: "Scrap / Wastage", icon: Boxes },
+      { key: "documents.materialprice", label: "Material Price", icon: TrendingUp },
     ],
   },
   {
@@ -380,6 +382,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Local testing only: set VITE_DEV_BYPASS_AUTH=true in .env.local and run `npm run dev`.
+    // import.meta.env.DEV is false in production builds, so this can never ship enabled.
+    if (import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === "true") {
+      setAuth({
+        user: { id: "dev-user" },
+        profile: { name: "Dev Tester", email: "dev@local", role: "Admin", status: "approved", enabled: true },
+      });
+      return;
+    }
     if (!isDbConfigured) { setAuth("out"); return; }
     let alive = true;
     getSessionUser().then((u) => { if (alive) resolve(u); });
@@ -950,6 +961,12 @@ function PageRouter(props) {
   }
   if (page === "documents.costing") {
     return <CostingPage isAdmin={isAdmin} projects={projects} notify={notify} />;
+  }
+  if (page === "documents.materialprice") {
+    return <MaterialPricePage isAdmin={isAdmin} notify={notify} />;
+  }
+  if (page === "documents.scrap") {
+    return <ScrapPage isAdmin={isAdmin} projects={projects} notify={notify} />;
   }
   if (page === "documents.bottleneck") {
     return <BottleneckPage isAdmin={isAdmin} projects={projects} notify={notify} />;

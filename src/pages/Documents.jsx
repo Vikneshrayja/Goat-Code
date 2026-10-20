@@ -1,15 +1,17 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
-  Plus, X, Trash2, Pencil, Eye, Printer, Download, FileText, ClipboardCheck, Wallet, Gauge, CalendarDays,
+  Plus, X, Trash2, Pencil, Eye, Printer, Download, Boxes, TrendingUp, ArrowUp, ArrowDown, FileText, ClipboardCheck, Wallet, Gauge, CalendarDays,
 } from "lucide-react";
 import logo from "../assets/logo.png";
 import { Field, SectionHeading, ConfirmModal, todayISO, durationDays } from "../shared";
 import { fetchDocs, upsertDoc, deleteDoc, subscribeTable } from "../lib/db";
 import {
-  RCA_SIGNERS, rcaHtml, costingHtml, costingSummaryHtml, bottleneckHtml, printHtml,
+  RCA_SIGNERS, rcaHtml, costingHtml, bottleneckHtml, scrapHtml, printHtml,
+  WEIGHT_UNITS, DOWNTIME_UNITS, scrapTotals, weightText, downtimeText, hoursText,
+  weightKg, pricePerKg, priceText, priceAt, annotatePrices, changeText, norm,
   fmtDateTime, money, costSaving, costSavingPct, CURRENCIES,
 } from "../lib/docHtml";
-import { rcaModel, costingModel, costingSummaryModel, bottleneckModel, downloadWord, downloadPdf } from "../lib/docExport";
+import { rcaModel, costingModel, bottleneckModel, scrapModel, scrapOverallModel, costingOverallModel, priceHistoryModel, periodLabel, modelHtml, downloadWord, downloadPdf } from "../lib/docExport";
 
 /* ============================ shared plumbing ============================ */
 
@@ -100,7 +102,7 @@ async function runDownload(kind, model, notify, setBusy) {
 }
 
 // On-screen preview of the exact document that gets printed.
-function PreviewModal({ title, html, model, onClose, notify }) {
+function PreviewModal({ title, html, model, onClose, notify, toolbar }) {
   const [busy, setBusy] = useState("");
   const doPrint = () => {
     if (!printHtml(html)) notify && notify("Pop-up blocked — allow pop-ups for this site to print or save as PDF.");
@@ -110,7 +112,8 @@ function PreviewModal({ title, html, model, onClose, notify }) {
       <div role="dialog" aria-label={`${title} preview`} className="bg-white rounded-lg w-full max-w-4xl h-[92vh] flex flex-col shadow-2xl">
         <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
           <div className="text-[14px] font-display font-semibold text-slate-800 flex items-center gap-1.5"><FileText size={16} className="text-turkish" /> {title}</div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {toolbar}
             {model && <>
               <button data-testid="doc-word" disabled={!!busy} onClick={() => runDownload("docx", model, notify, setBusy)} className="flex items-center gap-1.5 text-[12.5px] px-3.5 py-1.5 rounded-md border border-slate-200 hover:border-turkish text-slate-700 cursor-pointer disabled:opacity-60">
                 <Download size={14} /> {busy === "docx" ? "Preparing…" : "Word"}
@@ -236,6 +239,31 @@ function SignaturePad({ value, onChange, disabled, label }) {
   );
 }
 
+/* ============================ overall reports ============================ */
+// Whole-list report with an optional date range; opens as a preview that can be
+// downloaded as Word / PDF or printed. kind: "scrap" | "cost".
+function OverallReport({ kind, rows, onClose, notify }) {
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const dateKey = kind === "scrap" ? "scrap_date" : "change_date";
+  const filtered = useMemo(() => rows
+    .filter((r) => (!from || String(r[dateKey] || "") >= from) && (!to || String(r[dateKey] || "") <= to))
+    .sort((a, b) => String(a[dateKey] || "").localeCompare(String(b[dateKey] || ""))), [rows, from, to, dateKey]);
+  const period = periodLabel(from, to);
+  const model = useMemo(() => (kind === "scrap" ? scrapOverallModel(filtered, period) : costingOverallModel(filtered, period)), [kind, filtered, period]);
+  const html = useMemo(() => modelHtml(model, logoUrl()), [model]);
+  const toolbar = (
+    <div className="flex items-center gap-1.5 text-[12px] text-slate-500 mr-1">
+      <span>From</span>
+      <input data-testid="rep-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="input !py-1 !text-[12px] w-[132px]" />
+      <span>To</span>
+      <input data-testid="rep-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} className="input !py-1 !text-[12px] w-[132px]" />
+      <span className="text-slate-400 hidden sm:inline">{filtered.length} record{filtered.length === 1 ? "" : "s"}</span>
+    </div>
+  );
+  return <PreviewModal title={kind === "scrap" ? "Overall scrap report" : "Overall cost saving report"} html={html} model={model} toolbar={toolbar} onClose={onClose} notify={notify} />;
+}
+
 /* ================================== RCA ================================== */
 
 const localDT = () => {
@@ -245,8 +273,8 @@ const localDT = () => {
 };
 
 function RcaForm({ initial, rows, defaultReporter, onClose, onSave }) {
-  const [f, setF] = useState(() => initial ? { ...initial } : {
-    incident_at: localDT(), reported_by: defaultReporter || "", location: "", description: "", explanation: "",
+  const [f, setF] = useState(() => initial ? { witness_name: "", ...initial } : {
+    incident_at: localDT(), reported_by: defaultReporter || "", witness_name: "", location: "", description: "", explanation: "",
     corrective_action: "", preventive_action: "", fix_date: "", expected_date: "",
     dept_head_name: "", dept_head_sig: "", dept_head_signed_at: "",
     team_manager_name: "", team_manager_sig: "", team_manager_signed_at: "",
@@ -278,7 +306,7 @@ function RcaForm({ initial, rows, defaultReporter, onClose, onSave }) {
     if (res.error) setErrors({ _form: res.error });
   };
 
-  const setSig = (key, data) => setF((x) => ({ ...x, [`${key}_sig`]: data, [`${key}_signed_at`]: data ? (x[`${key}_signed_at`] || nowISO()) : "" }));
+  const setSig = (key, data) => setF((x) => ({ ...x, [`${key}_sig`]: data }));
 
   return (
     <Modal
@@ -295,11 +323,12 @@ function RcaForm({ initial, rows, defaultReporter, onClose, onSave }) {
         <Field label="Reported Person" error={errors.reported_by}>
           <input data-testid="rca-reporter" value={f.reported_by} onChange={(e) => set("reported_by", e.target.value)} className="input" placeholder="Name of the person reporting" />
         </Field>
-        <div className="sm:col-span-2">
-          <Field label="Location" error={errors.location}>
-            <input data-testid="rca-location" value={f.location} onChange={(e) => set("location", e.target.value)} className="input" placeholder="e.g. Welding bay 2" />
-          </Field>
-        </div>
+        <Field label="Witness Name">
+          <input data-testid="rca-witness" value={f.witness_name || ""} onChange={(e) => set("witness_name", e.target.value)} className="input" placeholder="Name of the witness" />
+        </Field>
+        <Field label="Location" error={errors.location}>
+          <input data-testid="rca-location" value={f.location} onChange={(e) => set("location", e.target.value)} className="input" placeholder="e.g. Welding bay 2" />
+        </Field>
       </div>
       <Field label="Description" error={errors.description}>
         <textarea data-testid="rca-description" rows={3} value={f.description} onChange={(e) => set("description", e.target.value)} className="input" placeholder="What happened?" />
@@ -314,8 +343,8 @@ function RcaForm({ initial, rows, defaultReporter, onClose, onSave }) {
         <textarea rows={2} value={f.preventive_action} onChange={(e) => set("preventive_action", e.target.value)} className="input" placeholder="What will stop it happening again?" />
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Fix Date"><input type="date" value={f.fix_date} onChange={(e) => set("fix_date", e.target.value)} className="input" /></Field>
-        <Field label="Expected Date"><input type="date" value={f.expected_date} onChange={(e) => set("expected_date", e.target.value)} className="input" /></Field>
+        <Field label="Temp Fix Date"><input type="date" value={f.fix_date} onChange={(e) => set("fix_date", e.target.value)} className="input" /></Field>
+        <Field label="Expected Solution Date"><input type="date" value={f.expected_date} onChange={(e) => set("expected_date", e.target.value)} className="input" /></Field>
       </div>
 
       <div>
@@ -326,7 +355,6 @@ function RcaForm({ initial, rows, defaultReporter, onClose, onSave }) {
               <div className="text-[12px] font-medium text-slate-700">{s.role}</div>
               <input value={f[`${s.key}_name`]} onChange={(e) => set(`${s.key}_name`, e.target.value)} className="input" placeholder="Name" aria-label={`${s.role} name`} />
               <SignaturePad label={s.role} value={f[`${s.key}_sig`]} onChange={(d) => setSig(s.key, d)} />
-              {f[`${s.key}_signed_at`] && <div className="text-[10.5px] text-slate-400">Signed {fmtDateTime(f[`${s.key}_signed_at`])}</div>}
             </div>
           ))}
         </div>
@@ -352,15 +380,16 @@ export function RcaPage({ isAdmin, session, notify }) {
         <div className="overflow-x-auto">
           <table className="w-full text-[12.5px]" data-testid="rca-table">
             <thead><tr className="bg-slate-50 text-left text-[11px] text-slate-400 uppercase tracking-wide">
-              <Th>Ref</Th><Th>Date &amp; Time</Th><Th>Reported By</Th><Th>Location</Th><Th>Description</Th><Th>Fix Date</Th><Th>Signed</Th><Th right>Actions</Th>
+              <Th>Ref</Th><Th>Date &amp; Time</Th><Th>Reported By</Th><Th>Witness</Th><Th>Location</Th><Th>Description</Th><Th>Temp Fix Date</Th><Th>Signed</Th><Th right>Actions</Th>
             </tr></thead>
             <tbody>
-              {rows.length === 0 && <Empty cols={8} loading={loading} text={"No RCA records yet." + (isAdmin ? " Use New RCA to create the first one." : "")} />}
+              {rows.length === 0 && <Empty cols={9} loading={loading} text={"No RCA records yet." + (isAdmin ? " Use New RCA to create the first one." : "")} />}
               {rows.map((r) => (
                 <tr key={r.id} className="border-t border-slate-50 hover:bg-slate-50/60">
                   <td className="px-3 py-2.5 font-mono text-slate-500">{r.ref}</td>
                   <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{fmtDateTime(r.incident_at)}</td>
                   <td className="px-3 py-2.5 text-slate-700">{r.reported_by}</td>
+                  <td className="px-3 py-2.5 text-slate-500">{r.witness_name || "—"}</td>
                   <td className="px-3 py-2.5 text-slate-500">{r.location}</td>
                   <td className="px-3 py-2.5 text-slate-500 max-w-[240px] truncate" title={r.description}>{r.description}</td>
                   <td className="px-3 py-2.5 font-mono text-slate-500">{r.fix_date || "—"}</td>
@@ -488,7 +517,7 @@ export function CostingPage({ isAdmin, projects, notify }) {
       <PageHeader title="Costing — Vendor Change" icon={Wallet} isAdmin={isAdmin} createLabel="New Vendor Change" onCreate={() => setForm({ record: null })}
         hint="Log each vendor change with old and new unit cost; the amount saved is worked out for you and totalled below."
         extra={rows.length > 0 && (
-          <button data-testid="cst-summary" onClick={() => setSummary(true)} className="flex items-center gap-1.5 text-[12.5px] text-slate-600 border border-slate-200 hover:border-turkish rounded-md px-3 py-2 cursor-pointer"><FileText size={14} /> Summary report</button>
+          <button data-testid="cst-summary" onClick={() => setSummary(true)} className="flex items-center gap-1.5 text-[12.5px] text-slate-600 border border-slate-200 hover:border-turkish rounded-md px-3 py-2 cursor-pointer"><FileText size={14} /> Overall report</button>
         )} />
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
@@ -540,7 +569,7 @@ export function CostingPage({ isAdmin, projects, notify }) {
           onSave={async (row) => { const res = await save(row); if (!res.error) { notify && notify(form.record ? "Vendor change updated." : "Vendor change saved."); setForm(null); } return res; }} />
       )}
       {view && <PreviewModal title={`Costing ${view.ref || ""}`} html={costingHtml(view, logoUrl())} model={costingModel(view)} onClose={() => setView(null)} notify={notify} />}
-      {summary && <PreviewModal title="Costing summary" html={costingSummaryHtml(rows, logoUrl())} model={costingSummaryModel(rows)} onClose={() => setSummary(false)} notify={notify} />}
+      {summary && <OverallReport kind="cost" rows={rows} onClose={() => setSummary(false)} notify={notify} />}
       {del && (
         <ConfirmModal title="Delete vendor change?" message={`Delete ${del.ref} (${del.item})? This cannot be undone.`} onCancel={() => setDel(null)}
           onConfirm={async () => { const r = del; setDel(null); const res = await remove(r.id); notify && notify(res.error ? "Could not delete: " + res.error : "Vendor change deleted."); }} />
@@ -691,6 +720,341 @@ export function BottleneckPage({ isAdmin, projects, notify }) {
       {del && (
         <ConfirmModal title="Delete project study?" message={`Delete ${del.ref} (${del.project_name})? This cannot be undone.`} onCancel={() => setDel(null)}
           onConfirm={async () => { const r = del; setDel(null); const res = await remove(r.id); notify && notify(res.error ? "Could not delete: " + res.error : "Project study deleted."); }} />
+      )}
+    </div>
+  );
+}
+
+
+/* ============================ Scrap / Wastage ============================ */
+
+function ScrapForm({ initial, rows, projects, prices, onClose, onSave }) {
+  const [f, setF] = useState(() => initial ? { ...initial } : {
+    scrap_date: todayISO(), project_name: "", material_name: "", designer_name: "",
+    weight: "", weight_unit: "kg", amount_loss: "", currency: "INR", downtime_value: "", downtime_unit: "Hours",
+  });
+  const [errors, setErrors] = useState({});
+  const [busy, setBusy] = useState(false);
+  // Amount loss follows the material price in force on the scrap date until the
+  // user types an amount themselves (existing records start in "manual").
+  const [manual, setManual] = useState(!!initial);
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const priceRec = useMemo(() => priceAt(prices, f.material_name, f.scrap_date), [prices, f.material_name, f.scrap_date]);
+  const priceNote = useMemo(() => (priceRec ? changeText(annotatePrices(prices)[priceRec.id]) : ""), [prices, priceRec]);
+  const auto = priceRec && f.weight !== "" && Number(f.weight) >= 0 ? Math.round(weightKg(f) * pricePerKg(priceRec) * 100) / 100 : null;
+  useEffect(() => {
+    if (!manual && auto != null) setF((x) => (x.amount_loss === auto && x.currency === priceRec.currency ? x : { ...x, amount_loss: auto, currency: priceRec.currency || x.currency }));
+  }, [auto, manual, priceRec]);
+  const materialNames = useMemo(() => [...new Set((prices || []).map((p) => p.material_name).filter(Boolean))], [prices]);
+
+  const submit = async () => {
+    const e = {};
+    if (!f.scrap_date) e.scrap_date = "Date is required.";
+    if (!String(f.project_name || "").trim()) e.project_name = "Project name is required.";
+    if (!String(f.material_name || "").trim()) e.material_name = "Material name is required.";
+    if (!String(f.designer_name || "").trim()) e.designer_name = "Designer name is required.";
+    if (f.weight === "" || !(Number(f.weight) >= 0)) e.weight = "Enter the scrap weight.";
+    if (f.amount_loss === "" || !(Number(f.amount_loss) >= 0)) e.amount_loss = "Enter the amount loss.";
+    if (f.downtime_value === "" || !(Number(f.downtime_value) >= 0)) e.downtime_value = "Enter the downtime (0 if none).";
+    setErrors(e);
+    if (Object.keys(e).length) return;
+    setBusy(true);
+    const now = nowISO();
+    const row = {
+      ...f,
+      project_name: f.project_name.trim(), material_name: f.material_name.trim(), designer_name: f.designer_name.trim(),
+      weight: Number(f.weight), amount_loss: Number(f.amount_loss), downtime_value: Number(f.downtime_value),
+      id: f.id || newId("SCR"), ref: f.ref || nextRef("SCR", rows),
+      created_at: f.created_at || now, updated_at: now,
+    };
+    const res = await onSave(row);
+    setBusy(false);
+    if (res.error) setErrors({ _form: res.error });
+  };
+
+  return (
+    <Modal
+      title={initial ? `Edit ${initial.ref || "scrap record"}` : "New Scrap / Wastage"} icon={Boxes} onClose={onClose}
+      footer={<>
+        <button onClick={onClose} className="text-[13px] px-3.5 py-1.5 rounded-md text-slate-500 hover:bg-slate-100 cursor-pointer">Cancel</button>
+        <button data-testid="doc-save" disabled={busy} onClick={submit} className="text-[13px] px-4 py-1.5 rounded-md bg-turkish hover:bg-turkish-deep text-white font-medium cursor-pointer disabled:opacity-60">Save</button>
+      </>}
+    >
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Field label="Date" error={errors.scrap_date}><input type="date" value={f.scrap_date} onChange={(e) => set("scrap_date", e.target.value)} className="input" /></Field>
+        <Field label="Project Name" error={errors.project_name}>
+          <input data-testid="scr-project" value={f.project_name} list="scr-projects" onChange={(e) => set("project_name", e.target.value)} className="input" placeholder="Choose or type" />
+          <datalist id="scr-projects">{(projects || []).map((p) => <option key={p.id} value={p.name} />)}</datalist>
+        </Field>
+        <Field label="Material Name" error={errors.material_name}>
+          <input data-testid="scr-material" value={f.material_name} list="scr-materials" onChange={(e) => set("material_name", e.target.value)} className="input" placeholder="Choose or type" />
+          <datalist id="scr-materials">{materialNames.map((m) => <option key={m} value={m} />)}</datalist>
+        </Field>
+        <Field label="Designer Name" error={errors.designer_name}><input data-testid="scr-designer" value={f.designer_name} onChange={(e) => set("designer_name", e.target.value)} className="input" /></Field>
+        <Field label="Weight" error={errors.weight}>
+          <div className="flex gap-2">
+            <input data-testid="scr-weight" type="number" min="0" step="any" value={f.weight} onChange={(e) => set("weight", e.target.value)} className="input flex-1" />
+            <select value={f.weight_unit} onChange={(e) => set("weight_unit", e.target.value)} className="input w-24">
+              {Object.keys(WEIGHT_UNITS).map((u) => <option key={u} value={u}>{u}</option>)}
+            </select>
+          </div>
+        </Field>
+        <Field label="Downtime Duration" error={errors.downtime_value}>
+          <div className="flex gap-2">
+            <input data-testid="scr-downtime" type="number" min="0" step="any" value={f.downtime_value} onChange={(e) => set("downtime_value", e.target.value)} className="input flex-1" />
+            <select value={f.downtime_unit} onChange={(e) => set("downtime_unit", e.target.value)} className="input w-28">
+              {Object.keys(DOWNTIME_UNITS).map((u) => <option key={u} value={u}>{u}</option>)}
+            </select>
+          </div>
+        </Field>
+        <Field label="Amount Loss" error={errors.amount_loss}>
+          <input data-testid="scr-loss" type="number" min="0" step="any" value={f.amount_loss} onChange={(e) => { setManual(true); set("amount_loss", e.target.value); }} className="input" />
+          {priceRec ? (
+            <div className="text-[11px] text-slate-400 mt-1" data-testid="scr-price-hint">
+              Material price {priceText(priceRec)} from {priceRec.effective_date}{priceNote && priceNote !== "Initial price" ? ` (${priceNote})` : ""}
+              {manual && auto != null && Number(f.amount_loss) !== auto && (
+                <button type="button" onClick={() => setManual(false)} className="ml-1.5 text-turkish-deep hover:underline cursor-pointer">Use calculated {money(auto, priceRec.currency)}</button>
+              )}
+            </div>
+          ) : String(f.material_name || "").trim() ? (
+            <div className="text-[11px] text-slate-400 mt-1">No price on file for this material on this date — enter the amount, or add the price under Material Price.</div>
+          ) : null}
+        </Field>
+        <Field label="Currency">
+          <select value={f.currency} onChange={(e) => set("currency", e.target.value)} className="input">
+            {Object.keys(CURRENCIES).map((c) => <option key={c} value={c}>{c} ({CURRENCIES[c].symbol})</option>)}
+          </select>
+        </Field>
+      </div>
+      {errors._form && <div className="text-[12px] text-red-500">{errors._form}</div>}
+    </Modal>
+  );
+}
+
+export function ScrapPage({ isAdmin, projects, notify }) {
+  const { rows, loading, save, remove } = useDocs("scrap_wastage", notify);
+  const [form, setForm] = useState(null);
+  const [view, setView] = useState(null);
+  const [del, setDel] = useState(null);
+  const [summary, setSummary] = useState(false);
+  const totals = useMemo(() => scrapTotals(rows), [rows]);
+  const priceStore = useDocs("material_prices", notify);
+
+  return (
+    <div className="space-y-4">
+      <PageHeader title="Scrap / Wastage" icon={Boxes} isAdmin={isAdmin} createLabel="New Scrap Record" onCreate={() => setForm({ record: null })}
+        hint="Record scrap weight, material, project, designer, the amount lost and the downtime. Open any record to download it as Word or PDF, or print it."
+        extra={rows.length > 0 && (
+          <button onClick={() => setSummary(true)} className="flex items-center gap-1.5 text-[12.5px] text-slate-600 border border-slate-200 hover:border-turkish rounded-md px-3 py-2 cursor-pointer"><FileText size={14} /> Overall report</button>
+        )} />
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white rounded-xl border border-slate-200 px-4 py-3.5">
+          <div className="text-[10.5px] uppercase tracking-wide text-slate-400">Records</div>
+          <div className="text-[26px] font-mono font-semibold text-slate-800 mt-1">{rows.length}</div>
+        </div>
+        <div className="bg-white rounded-xl border border-slate-200 px-4 py-3.5">
+          <div className="text-[10.5px] uppercase tracking-wide text-slate-400">Total scrap</div>
+          <div className="text-[26px] font-mono font-semibold text-slate-800 mt-1">{rows.length ? `${Number(totals.kg.toFixed(2)).toLocaleString("en-IN")} kg` : "—"}</div>
+        </div>
+        <div className="bg-white rounded-xl border border-slate-200 px-4 py-3.5">
+          <div className="text-[10.5px] uppercase tracking-wide text-slate-400">Total downtime</div>
+          <div className="text-[26px] font-mono font-semibold text-slate-800 mt-1">{rows.length ? hoursText(totals.hrs) : "—"}</div>
+        </div>
+        <div className="bg-white rounded-xl border border-slate-200 px-4 py-3.5">
+          <div className="text-[10.5px] uppercase tracking-wide text-slate-400">Total loss</div>
+          <div className="mt-1 flex flex-wrap gap-x-4">
+            {Object.keys(totals.loss).length === 0 && <span className="text-[26px] font-mono font-semibold text-slate-300">—</span>}
+            {Object.entries(totals.loss).map(([c, v]) => <span key={c} className="text-[22px] font-mono font-semibold text-red-600">{money(v, c)}</span>)}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-[12.5px]" data-testid="scr-table">
+            <thead><tr className="bg-slate-50 text-left text-[11px] text-slate-400 uppercase tracking-wide">
+              <Th>Ref</Th><Th>Date</Th><Th>Project</Th><Th>Material</Th><Th>Designer</Th><Th right>Weight</Th><Th right>Downtime</Th><Th right>Amount Loss</Th><Th right>Actions</Th>
+            </tr></thead>
+            <tbody>
+              {rows.length === 0 && <Empty cols={9} loading={loading} text={"No scrap records yet." + (isAdmin ? " Use New Scrap Record to add one." : "")} />}
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t border-slate-50 hover:bg-slate-50/60">
+                  <td className="px-3 py-2.5 font-mono text-slate-500">{r.ref}</td>
+                  <td className="px-3 py-2.5 font-mono text-slate-500">{r.scrap_date}</td>
+                  <td className="px-3 py-2.5 text-slate-700">{r.project_name}</td>
+                  <td className="px-3 py-2.5 text-slate-500">{r.material_name}</td>
+                  <td className="px-3 py-2.5 text-slate-500">{r.designer_name}</td>
+                  <td className="px-3 py-2.5 text-right font-mono text-slate-500 whitespace-nowrap">{weightText(r)}</td>
+                  <td className="px-3 py-2.5 text-right font-mono text-slate-500 whitespace-nowrap">{downtimeText(r)}</td>
+                  <td className="px-3 py-2.5 text-right font-mono font-semibold text-red-600 whitespace-nowrap">{money(r.amount_loss, r.currency)}</td>
+                  <td className="px-3 py-2.5"><RowActions isAdmin={isAdmin} label={r.ref} notify={notify} model={scrapModel(r)} onView={() => setView(r)} onEdit={() => setForm({ record: r })} onDelete={() => setDel(r)} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {form && (
+        <ScrapForm initial={form.record} rows={rows} projects={projects} prices={priceStore.rows} onClose={() => setForm(null)}
+          onSave={async (row) => { const res = await save(row); if (!res.error) { notify && notify(form.record ? "Scrap record updated." : "Scrap record saved."); setForm(null); } return res; }} />
+      )}
+      {view && <PreviewModal title={`Scrap ${view.ref || ""}`} html={scrapHtml(view, logoUrl())} model={scrapModel(view)} onClose={() => setView(null)} notify={notify} />}
+      {summary && <OverallReport kind="scrap" rows={rows} onClose={() => setSummary(false)} notify={notify} />}
+      {del && (
+        <ConfirmModal title="Delete scrap record?" message={`Delete ${del.ref} (${del.material_name})? This cannot be undone.`} onCancel={() => setDel(null)}
+          onConfirm={async () => { const r = del; setDel(null); const res = await remove(r.id); notify && notify(res.error ? "Could not delete: " + res.error : "Scrap record deleted."); }} />
+      )}
+    </div>
+  );
+}
+
+
+/* ============================== Material Price ============================== */
+
+function ChangeBadge({ a }) {
+  if (!a) return null;
+  if (a.dir === "Increase") return <span className="inline-flex items-center gap-0.5 text-[11px] px-2 py-0.5 rounded-full bg-red-50 text-red-600 whitespace-nowrap"><ArrowUp size={11} />{changeText(a)}</span>;
+  if (a.dir === "Decrease") return <span className="inline-flex items-center gap-0.5 text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 whitespace-nowrap"><ArrowDown size={11} />{changeText(a)}</span>;
+  return <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 whitespace-nowrap">{changeText(a)}</span>;
+}
+
+function PriceForm({ initial, prices, onClose, onSave }) {
+  const [f, setF] = useState(() => initial ? { ...initial } : { material_name: "", price: "", price_unit: "kg", currency: "INR", effective_date: todayISO(), note: "" });
+  const [errors, setErrors] = useState({});
+  const [busy, setBusy] = useState(false);
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const names = useMemo(() => [...new Set((prices || []).map((p) => p.material_name).filter(Boolean))], [prices]);
+
+  const submit = async () => {
+    const e = {};
+    if (!String(f.material_name || "").trim()) e.material_name = "Material name is required.";
+    if (f.price === "" || !(Number(f.price) >= 0)) e.price = "Enter the price.";
+    if (!f.effective_date) e.effective_date = "Effective date is required.";
+    setErrors(e);
+    if (Object.keys(e).length) return;
+    setBusy(true);
+    const now = nowISO();
+    const res = await onSave({
+      ...f, material_name: f.material_name.trim(), price: Number(f.price),
+      id: f.id || newId("MPR"), created_at: f.created_at || now, updated_at: now,
+    });
+    setBusy(false);
+    if (res.error) setErrors({ _form: res.error });
+  };
+
+  return (
+    <Modal title={initial ? "Edit material price" : "New material price"} icon={TrendingUp} onClose={onClose}
+      footer={<>
+        <button onClick={onClose} className="text-[13px] px-3.5 py-1.5 rounded-md text-slate-500 hover:bg-slate-100 cursor-pointer">Cancel</button>
+        <button data-testid="doc-save" disabled={busy} onClick={submit} className="text-[13px] px-4 py-1.5 rounded-md bg-turkish hover:bg-turkish-deep text-white font-medium cursor-pointer disabled:opacity-60">Save</button>
+      </>}>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="sm:col-span-2">
+          <Field label="Material Name" error={errors.material_name}>
+            <input data-testid="mp-material" value={f.material_name} list="mp-materials" onChange={(e) => set("material_name", e.target.value)} className="input" placeholder="Choose existing or type a new material" />
+            <datalist id="mp-materials">{names.map((m) => <option key={m} value={m} />)}</datalist>
+          </Field>
+        </div>
+        <Field label="Price" error={errors.price}>
+          <div className="flex gap-2">
+            <input data-testid="mp-price" type="number" min="0" step="any" value={f.price} onChange={(e) => set("price", e.target.value)} className="input flex-1" />
+            <select value={f.price_unit} onChange={(e) => set("price_unit", e.target.value)} className="input w-24" aria-label="Price per">
+              {Object.keys(WEIGHT_UNITS).map((u) => <option key={u} value={u}>per {u}</option>)}
+            </select>
+          </div>
+        </Field>
+        <Field label="Currency">
+          <select value={f.currency} onChange={(e) => set("currency", e.target.value)} className="input">
+            {Object.keys(CURRENCIES).map((c) => <option key={c} value={c}>{c} ({CURRENCIES[c].symbol})</option>)}
+          </select>
+        </Field>
+        <Field label="Effective From" error={errors.effective_date}><input type="date" value={f.effective_date} onChange={(e) => set("effective_date", e.target.value)} className="input" /></Field>
+        <Field label="Note"><input value={f.note || ""} onChange={(e) => set("note", e.target.value)} className="input" placeholder="e.g. supplier revision" /></Field>
+      </div>
+      {errors._form && <div className="text-[12px] text-red-500">{errors._form}</div>}
+    </Modal>
+  );
+}
+
+export function MaterialPricePage({ isAdmin, notify }) {
+  const { rows, loading, save, remove } = useDocs("material_prices", notify);
+  const [form, setForm] = useState(null);
+  const [del, setDel] = useState(null);
+  const [report, setReport] = useState(false);
+  const ann = useMemo(() => annotatePrices(rows), [rows]);
+  const sorted = useMemo(() => [...rows].sort((a, b) =>
+    String(a.material_name).toLowerCase().localeCompare(String(b.material_name).toLowerCase()) ||
+    String(b.effective_date).localeCompare(String(a.effective_date)) || String(b.created_at).localeCompare(String(a.created_at))), [rows]);
+  // newest entry for each material
+  const current = useMemo(() => {
+    const seen = new Set(), out = [];
+    sorted.forEach((r) => { const k = norm(r.material_name); if (!seen.has(k)) { seen.add(k); out.push(r); } });
+    return out;
+  }, [sorted]);
+
+  return (
+    <div className="space-y-4">
+      <PageHeader title="Material Price" icon={TrendingUp} isAdmin={isAdmin} createLabel="New Price" onCreate={() => setForm({ record: null })}
+        hint="Enter each material's price with the date it takes effect. Every new price is compared with the previous one (Increase / Decrease) and is used to work out the amount loss on Scrap / Wastage records."
+        extra={rows.length > 0 && (
+          <button data-testid="mp-report" onClick={() => setReport(true)} className="flex items-center gap-1.5 text-[12.5px] text-slate-600 border border-slate-200 hover:border-turkish rounded-md px-3 py-2 cursor-pointer"><FileText size={14} /> Price history report</button>
+        )} />
+
+      {current.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {current.map((r) => (
+            <div key={r.id} className="bg-white rounded-xl border border-slate-200 px-4 py-3.5">
+              <div className="text-[10.5px] uppercase tracking-wide text-slate-400 truncate" title={r.material_name}>{r.material_name}</div>
+              <div className="flex items-center justify-between gap-2 mt-1">
+                <div className="text-[20px] font-mono font-semibold text-slate-800">{priceText(r)}</div>
+                <ChangeBadge a={ann[r.id]} />
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1">Effective {r.effective_date}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-[12.5px]" data-testid="mp-table">
+            <thead><tr className="bg-slate-50 text-left text-[11px] text-slate-400 uppercase tracking-wide">
+              <Th>Material</Th><Th>Effective From</Th><Th right>Price</Th><Th>Change vs previous</Th><Th>Note</Th><Th right>Actions</Th>
+            </tr></thead>
+            <tbody>
+              {rows.length === 0 && <Empty cols={6} loading={loading} text={"No material prices yet." + (isAdmin ? " Use New Price to add one." : "")} />}
+              {sorted.map((r) => (
+                <tr key={r.id} className="border-t border-slate-50 hover:bg-slate-50/60">
+                  <td className="px-3 py-2.5 text-slate-700">{r.material_name}</td>
+                  <td className="px-3 py-2.5 font-mono text-slate-500">{r.effective_date}</td>
+                  <td className="px-3 py-2.5 text-right font-mono text-slate-700 whitespace-nowrap">{priceText(r)}</td>
+                  <td className="px-3 py-2.5"><ChangeBadge a={ann[r.id]} /></td>
+                  <td className="px-3 py-2.5 text-slate-500">{r.note || "—"}</td>
+                  <td className="px-3 py-2.5">
+                    {isAdmin && (
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => setForm({ record: r })} aria-label={`Edit price of ${r.material_name}`} title="Edit" className="p-1.5 rounded hover:bg-slate-100 text-slate-500 cursor-pointer"><Pencil size={13} /></button>
+                        <button onClick={() => setDel(r)} aria-label={`Delete price of ${r.material_name}`} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-slate-500 hover:text-red-500 cursor-pointer"><Trash2 size={13} /></button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {form && (
+        <PriceForm initial={form.record} prices={rows} onClose={() => setForm(null)}
+          onSave={async (row) => { const res = await save(row); if (!res.error) { notify && notify(form.record ? "Price updated." : "Price saved."); setForm(null); } return res; }} />
+      )}
+      {report && (() => { const m = priceHistoryModel(rows); return <PreviewModal title="Material price history" html={modelHtml(m, logoUrl())} model={m} onClose={() => setReport(false)} notify={notify} />; })()}
+      {del && (
+        <ConfirmModal title="Delete price?" message={`Delete the ${del.material_name} price effective ${del.effective_date}? This cannot be undone.`} onCancel={() => setDel(null)}
+          onConfirm={async () => { const r = del; setDel(null); const res = await remove(r.id); notify && notify(res.error ? "Could not delete: " + res.error : "Price deleted."); }} />
       )}
     </div>
   );

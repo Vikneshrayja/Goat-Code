@@ -13,7 +13,7 @@ export const esc = (v) =>
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
 // Multi-line text -> escaped paragraphs / line breaks.
-const para = (v) => {
+export const para = (v) => {
   const t = String(v == null ? "" : v).trim();
   return t ? esc(t).replace(/\n/g, "<br>") : '<span class="empty">—</span>';
 };
@@ -81,14 +81,14 @@ const CSS = `
   li { margin: 2px 0; }
 `;
 
-const page = (title, logoUrl, ref, subtitle, body) => `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${CSS}</style></head><body>
+export const page = (title, logoUrl, ref, subtitle, body) => `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${CSS}</style></head><body>
 <div class="head"><div>${logoUrl ? `<img src="${esc(logoUrl)}" alt="GOAT Robotics">` : "<strong>GOAT Robotics</strong>"}</div>
 <div class="meta"><h1>${esc(title)}</h1><div>${esc(subtitle || "")}</div><div>Ref: <strong>${esc(ref || "—")}</strong></div></div></div>
 ${body}
 <div class="foot">GOAT Robotics · PRD-Tracker · Generated ${esc(new Date().toLocaleString("en-GB"))}</div>
 </body></html>`;
 
-const row = (k, v) => `<tr><td class="k">${esc(k)}</td><td>${v}</td></tr>`;
+export const row = (k, v) => `<tr><td class="k">${esc(k)}</td><td>${v}</td></tr>`;
 
 /* --------------------------------- RCA ---------------------------------- */
 export const RCA_SIGNERS = [
@@ -102,16 +102,16 @@ export function rcaHtml(r, logoUrl) {
     const raw = r[`${s.key}_sig`];
     const img = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(raw || "") ? raw : "";
     return `<div class="sig"><div class="pad">${img ? `<img src="${esc(img)}" alt="signature">` : ""}</div>
-      <div class="role">${esc(s.role)}</div><div class="nm">${esc(r[`${s.key}_name`] || "")}</div>
-      <div class="dt">${r[`${s.key}_signed_at`] ? "Signed " + esc(fmtDateTime(r[`${s.key}_signed_at`])) : "Not signed"}</div></div>`;
+      <div class="role">${esc(s.role)}</div><div class="nm">${esc(r[`${s.key}_name`] || "")}</div></div>`;
   }).join("");
   const body = `
   <table>
     ${row("Date & Time of Incident", esc(fmtDateTime(r.incident_at)))}
     ${row("Reported Person", para(r.reported_by))}
+    ${row("Witness Name", para(r.witness_name))}
     ${row("Location", para(r.location))}
-    ${row("Fix Date", esc(fmtDate(r.fix_date)))}
-    ${row("Expected Date", esc(fmtDate(r.expected_date)))}
+    ${row("Temp Fix Date", esc(fmtDate(r.fix_date)))}
+    ${row("Expected Solution Date", esc(fmtDate(r.expected_date)))}
   </table>
   <h2>Description</h2><div class="box">${para(r.description)}</div>
   <h2>Explanation</h2><div class="box">${para(r.explanation)}</div>
@@ -170,6 +170,49 @@ export function bottleneckHtml(r, logoUrl) {
   return page("Project Study — Bottleneck Analysis", logoUrl, r.ref, "Project studies", body);
 }
 
+/* ----------------------------- Scrap / Wastage --------------------------- */
+export const WEIGHT_UNITS = { kg: 1, g: 0.001, ton: 1000 };
+export const DOWNTIME_UNITS = { Minutes: 1 / 60, Hours: 1, Days: 24 };
+const numFmt = (v) => (isFinite(Number(v)) ? Number(v).toLocaleString("en-IN", { maximumFractionDigits: 3 }) : "—");
+export const weightKg = (r) => (Number(r.weight) || 0) * (WEIGHT_UNITS[r.weight_unit || "kg"] ?? 1);
+export const downtimeHours = (r) => (Number(r.downtime_value) || 0) * (DOWNTIME_UNITS[r.downtime_unit || "Hours"] ?? 1);
+export const weightText = (r) => `${numFmt(r.weight)} ${r.weight_unit || "kg"}`;
+export const downtimeText = (r) => `${numFmt(r.downtime_value)} ${r.downtime_unit || "Hours"}`;
+export const hoursText = (h) => `${numFmt(h)} hrs`;
+export const scrapTotals = (rows) => {
+  const loss = {};
+  let kg = 0, hrs = 0;
+  rows.forEach((r) => {
+    const c = r.currency || "INR";
+    loss[c] = (loss[c] || 0) + (Number(r.amount_loss) || 0);
+    kg += weightKg(r); hrs += downtimeHours(r);
+  });
+  return { loss, kg, hrs };
+};
+
+export function scrapHtml(r, logoUrl) {
+  const body = `
+  <table>
+    ${row("Date", esc(fmtDate(r.scrap_date)))}
+    ${row("Project Name", para(r.project_name))}
+    ${row("Material Name", para(r.material_name))}
+    ${row("Designer Name", para(r.designer_name))}
+    ${row("Weight", esc(weightText(r)))}
+    ${row("Amount Loss", esc(money(r.amount_loss, r.currency)))}
+    ${row("Downtime Duration", esc(downtimeText(r)))}
+  </table>`;
+  return page("Scrap / Wastage Report", logoUrl, r.ref, "Scrap & wastage record", body);
+}
+
+export function scrapSummaryHtml(rows, logoUrl) {
+  const t = scrapTotals(rows);
+  const lines = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(fmtDate(r.scrap_date))}</td><td>${esc(r.project_name)}<br>${esc(r.material_name)}</td><td>${esc(r.designer_name)}</td><td class="num">${esc(weightText(r))}</td><td class="num">${esc(downtimeText(r))}</td><td class="num">${esc(money(r.amount_loss, r.currency))}</td></tr>`).join("");
+  const totals = `<tr class="total"><td colspan="4">Total weight / downtime</td><td class="num">${esc(numFmt(t.kg))} kg</td><td class="num">${esc(hoursText(t.hrs))}</td><td></td></tr>` +
+    Object.entries(t.loss).map(([c, v]) => `<tr class="total"><td colspan="6">Total amount loss (${esc(c)})</td><td class="num">${esc(money(v, c))}</td></tr>`).join("");
+  const bodyHtml = `<table><tr><th>#</th><th>Date</th><th>Project / Material</th><th>Designer</th><th class="num">Weight</th><th class="num">Downtime</th><th class="num">Amount loss</th></tr>${lines || '<tr><td colspan="7" class="empty">No scrap records.</td></tr>'}${rows.length ? totals : ""}</table>`;
+  return page("Scrap / Wastage Summary", logoUrl, `${rows.length} record${rows.length === 1 ? "" : "s"}`, "All scrap & wastage records", bodyHtml);
+}
+
 /* -------------------------------- printing ------------------------------- */
 // Opens the document in its own window and triggers the print dialog
 // ("Save as PDF" is available there). Must be called from a click handler.
@@ -180,4 +223,74 @@ export function printHtml(html) {
   w.document.write(html + "<script>window.addEventListener('load',function(){setTimeout(function(){window.print();},250);});</script>");
   w.document.close();
   return true;
+}
+
+
+/* ------------------------- material prices & reports ------------------------ */
+// A material's price changes over time. Every entry has an effective date; the
+// price that applies to a scrap record is the latest entry on or before the
+// scrap date. Each entry is compared with the previous one for the same
+// material, so "Increase" / "Decrease" is worked out automatically.
+export const norm = (v) => String(v == null ? "" : v).trim().toLowerCase();
+export const pricePerKg = (r) => (Number(r.price) || 0) / (WEIGHT_UNITS[r.price_unit || "kg"] ?? 1);
+export const priceText = (r) => `${money(r.price, r.currency)} / ${r.price_unit || "kg"}`;
+
+export function priceAt(prices, material, dateISO) {
+  const m = norm(material), d = String(dateISO || "");
+  const c = (prices || []).filter((r) => norm(r.material_name) === m && String(r.effective_date || "") <= d);
+  c.sort((a, b) => String(b.effective_date).localeCompare(String(a.effective_date)) || String(b.created_at).localeCompare(String(a.created_at)));
+  return c[0] || null;
+}
+
+export function annotatePrices(prices) {
+  const by = {};
+  (prices || []).forEach((r) => { (by[norm(r.material_name)] = by[norm(r.material_name)] || []).push(r); });
+  const out = {};
+  Object.values(by).forEach((list) => {
+    list.sort((a, b) => String(a.effective_date).localeCompare(String(b.effective_date)) || String(a.created_at).localeCompare(String(b.created_at)));
+    list.forEach((r, i) => {
+      if (i === 0) { out[r.id] = { dir: "Initial", pct: null }; return; }
+      const prev = pricePerKg(list[i - 1]), cur = pricePerKg(r);
+      out[r.id] = {
+        dir: cur > prev ? "Increase" : cur < prev ? "Decrease" : "No change",
+        pct: prev > 0 ? ((cur - prev) / prev) * 100 : null,
+      };
+    });
+  });
+  return out;
+}
+export const changeText = (a) => {
+  if (!a) return "";
+  if (a.dir === "Initial" || a.dir === "No change") return a.dir === "Initial" ? "Initial price" : "No change";
+  return a.pct == null ? a.dir : `${a.dir} ${a.pct >= 0 ? "+" : ""}${a.pct.toFixed(1)}%`;
+};
+
+const sumLoss = (o) => Object.values(o).reduce((a, v) => a + v, 0);
+export const amountsText = (o) => {
+  const e = Object.entries(o || {});
+  return e.length ? e.map(([c, v]) => money(v, c)).join("\n") : "—";
+};
+
+// Group scrap records (by material / project / designer).
+export function scrapGroups(rows, keyFn) {
+  const g = {};
+  rows.forEach((r) => {
+    const k = String(keyFn(r) || "").trim() || "(not set)";
+    const o = g[k] || (g[k] = { name: k, count: 0, kg: 0, hrs: 0, loss: {} });
+    const c = r.currency || "INR";
+    o.count++; o.kg += weightKg(r); o.hrs += downtimeHours(r);
+    o.loss[c] = (o.loss[c] || 0) + (Number(r.amount_loss) || 0);
+  });
+  return Object.values(g).sort((a, b) => sumLoss(b.loss) - sumLoss(a.loss) || a.name.localeCompare(b.name));
+}
+// Group vendor changes (by project / item / new vendor).
+export function costGroups(rows, keyFn) {
+  const g = {};
+  rows.forEach((r) => {
+    const k = String(keyFn(r) || "").trim() || "(not set)";
+    const o = g[k] || (g[k] = { name: k, count: 0, saved: {} });
+    const c = r.currency || "INR";
+    o.count++; o.saved[c] = (o.saved[c] || 0) + costSaving(r);
+  });
+  return Object.values(g).sort((a, b) => sumLoss(b.saved) - sumLoss(a.saved) || a.name.localeCompare(b.name));
 }
